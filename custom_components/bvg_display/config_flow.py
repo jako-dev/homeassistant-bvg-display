@@ -1,9 +1,11 @@
 """Config flow for BVG Departure Display."""
 
+from typing import Any
+
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, OptionsFlow
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
@@ -17,6 +19,8 @@ from .const import (
     DOMAIN,
     TRANSPORT_TYPES,
 )
+
+DEPARTURE_COUNT_OPTIONS = ["1", "3", "6", "9", "12", "15"]
 
 
 class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -91,17 +95,17 @@ class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_STATION_NAME: self._selected_station_name,
                 },
                 options={
-                    CONF_DEPARTURE_COUNT: user_input.get(
-                        CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT
-                    ),
+                    CONF_DEPARTURE_COUNT: int(user_input.get(
+                        CONF_DEPARTURE_COUNT, str(DEFAULT_DEPARTURE_COUNT)
+                    )),
                     CONF_FILTERS: filters,
                 },
             )
 
         schema = {
             vol.Required(
-                CONF_DEPARTURE_COUNT, default=DEFAULT_DEPARTURE_COUNT
-            ): vol.In({1: "1", 3: "3", 6: "6", 9: "9", 12: "12", 15: "15"}),
+                CONF_DEPARTURE_COUNT, default=str(DEFAULT_DEPARTURE_COUNT)
+            ): vol.In(DEPARTURE_COUNT_OPTIONS),
         }
         for transport_type in TRANSPORT_TYPES:
             schema[vol.Optional(transport_type, default=True)] = bool
@@ -165,9 +169,9 @@ class BvgDisplayOptionsFlow(OptionsFlow):
             return self.async_create_entry(
                 title="",
                 data={
-                    CONF_DEPARTURE_COUNT: user_input.get(
-                        CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT
-                    ),
+                    CONF_DEPARTURE_COUNT: int(user_input.get(
+                        CONF_DEPARTURE_COUNT, str(DEFAULT_DEPARTURE_COUNT)
+                    )),
                     CONF_FILTERS: filters,
                 },
             )
@@ -179,8 +183,8 @@ class BvgDisplayOptionsFlow(OptionsFlow):
 
         schema = {
             vol.Required(
-                CONF_DEPARTURE_COUNT, default=current_count
-            ): vol.In({1: "1", 3: "3", 6: "6", 9: "9", 12: "12", 15: "15"}),
+                CONF_DEPARTURE_COUNT, default=str(current_count)
+            ): vol.In(DEPARTURE_COUNT_OPTIONS),
         }
         for transport_type in TRANSPORT_TYPES:
             schema[
