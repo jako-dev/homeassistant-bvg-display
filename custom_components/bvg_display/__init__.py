@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_DEPARTURE_COUNT,
@@ -27,6 +28,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BVG Display from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
+    # Guard against duplicate setup (race condition during reload)
+    if entry.entry_id in hass.data[DOMAIN]:
+        _LOGGER.debug("Entry %s already set up, skipping", entry.entry_id)
+        return True
+
     departure_count = entry.options.get(CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT)
     filters = entry.options.get(CONF_FILTERS, {})
 
@@ -38,7 +44,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         filters=filters,
     )
 
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as err:
+        raise ConfigEntryNotReady(
+            f"Failed to fetch initial data for {entry.data[CONF_STATION_NAME]}: {err}"
+        ) from err
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
@@ -71,5 +82,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok

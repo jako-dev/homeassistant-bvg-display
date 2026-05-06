@@ -4,8 +4,10 @@ from datetime import timedelta
 import logging
 
 import aiohttp
+import asyncio
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -61,11 +63,16 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
         url = f"{BVG_API_BASE}/stops/{self.station_id}/departures"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            session = async_get_clientsession(self.hass)
+            async with asyncio.timeout(15):
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 429:
+                        raise UpdateFailed("BVG API rate limit exceeded, retrying next cycle")
                     if resp.status != 200:
                         raise UpdateFailed(f"BVG API returned {resp.status}")
                     data = await resp.json()
+        except asyncio.TimeoutError as err:
+            raise UpdateFailed(f"Timeout fetching BVG data for {self.station_name}") from err
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"Error fetching BVG data: {err}") from err
 
