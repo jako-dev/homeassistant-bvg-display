@@ -24,6 +24,7 @@ class BvgDisplayCard extends HTMLElement {
     this._entities = config.entities || [config.entity];
     this._rows = config.rows || 3;
     this._scrollSpeed = config.scroll_speed || 3000;
+    this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
@@ -36,7 +37,9 @@ class BvgDisplayCard extends HTMLElement {
       this._render();
       this._rendered = true;
     }
-    this._startScroll();
+    if (this._scrollEnabled) {
+      this._startScroll();
+    }
   }
 
   disconnectedCallback() {
@@ -161,15 +164,22 @@ class BvgDisplayCard extends HTMLElement {
 
     const rows = this._rows;
     const rowHeight = 10;
-    const startIdx = this._scrollIndex % Math.max(1, departures.length - rows + 1);
 
-    for (let i = 0; i < rows; i++) {
-      const depIdx = startIdx + i;
-      if (depIdx >= departures.length) break;
-      const dep = departures[depIdx];
-      const y = i * rowHeight + 1;
-
-      this._renderDepartureRow(ctx, dep, y, SCALE);
+    if (!this._scrollEnabled) {
+      // Static mode: show only the first N rows
+      for (let i = 0; i < rows && i < departures.length; i++) {
+        const y = i * rowHeight + 1;
+        this._renderDepartureRow(ctx, departures[i], y, SCALE);
+      }
+    } else {
+      const startIdx = this._scrollIndex % Math.max(1, departures.length - rows + 1);
+      for (let i = 0; i < rows; i++) {
+        const depIdx = startIdx + i;
+        if (depIdx >= departures.length) break;
+        const dep = departures[depIdx];
+        const y = i * rowHeight + 1;
+        this._renderDepartureRow(ctx, dep, y, SCALE);
+      }
     }
   }
 
@@ -298,7 +308,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entities: [], rows: 3, scroll_speed: 3000, show_platform: true, show_header: false, frame_style: 'panel' };
+    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel' };
   }
 }
 
@@ -420,6 +430,7 @@ class BvgDisplayCardEditor extends HTMLElement {
     const entities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
+    const scrollEnabled = this._config.scroll_enabled !== false;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
@@ -538,8 +549,17 @@ class BvgDisplayCardEditor extends HTMLElement {
           </select>
         </div>
         <div class="field">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <label>Scroll Enabled</label>
+              <span class="description">Cycle through all departures. If off, only shows first rows.</span>
+            </div>
+            <input type="checkbox" id="scroll_enabled" ${scrollEnabled ? 'checked' : ''}>
+          </div>
+        </div>
+        <div class="field">
           <label>Scroll Speed</label>
-          <span class="description">How fast departures cycle</span>
+          <span class="description">How fast departures cycle (only when scroll is enabled)</span>
           <select id="scroll_speed">
             <option value="1500" ${scrollValue === 1500 ? 'selected' : ''}>1.5s (Fast)</option>
             <option value="2000" ${scrollValue === 2000 ? 'selected' : ''}>2s</option>
@@ -601,6 +621,9 @@ class BvgDisplayCardEditor extends HTMLElement {
 
     this.shadowRoot.getElementById('rows').addEventListener('change', (e) => {
       this._updateConfig('rows', parseInt(e.target.value));
+    });
+    this.shadowRoot.getElementById('scroll_enabled').addEventListener('change', (e) => {
+      this._updateConfig('scroll_enabled', e.target.checked);
     });
     this.shadowRoot.getElementById('scroll_speed').addEventListener('change', (e) => {
       this._updateConfig('scroll_speed', parseInt(e.target.value));
