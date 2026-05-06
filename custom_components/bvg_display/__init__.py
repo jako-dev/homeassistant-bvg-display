@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -43,11 +44,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register the custom Lovelace card
-    hass.http.register_static_path(
-        "/bvg-display/bvg-display-card.js",
-        str(Path(__file__).parent / "www" / "bvg-display-card.js"),
-        cache_headers=False,
-    )
+    hass.http.async_register_static_paths([
+        StaticPathConfig(
+            "/bvg-display/bvg-display-card.js",
+            str(Path(__file__).parent / "www" / "bvg-display-card.js"),
+            cache_headers=False,
+        )
+    ])
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
