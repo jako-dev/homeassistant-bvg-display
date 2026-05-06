@@ -17,10 +17,11 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config.entity) {
-      throw new Error("Please define an entity (sensor.bvg_*_departures)");
+    if (!config.entity && (!config.entities || config.entities.length === 0)) {
+      throw new Error("Please define 'entity' or 'entities' (sensor.bvg_*_departures)");
     }
     this._config = config;
+    this._entities = config.entities || [config.entity];
     this._rows = config.rows || 3;
     this._scrollSpeed = config.scroll_speed || 3000;
     this._showPlatform = config.show_platform !== false;
@@ -117,20 +118,34 @@ class BvgDisplayCard extends HTMLElement {
   _updateCard() {
     if (!this._hass || !this._config || !this._canvas) return;
 
-    const entity = this._hass.states[this._config.entity];
-    if (!entity) return;
+    // Collect departures from all configured entities
+    let allDepartures = [];
+    let stationNames = [];
 
-    const departures = entity.attributes.departures || [];
-    const stationName = entity.attributes.station_name || '';
-
-    if (this._headerEl) {
-      this._headerEl.textContent = stationName;
+    for (const entityId of this._entities) {
+      const entity = this._hass.states[entityId];
+      if (!entity) continue;
+      const deps = entity.attributes.departures || [];
+      const name = entity.attributes.station_name || '';
+      if (name && !stationNames.includes(name)) stationNames.push(name);
+      allDepartures = allDepartures.concat(deps);
     }
 
-    this._renderLed(departures, stationName);
+    // Sort by minutes (soonest first)
+    allDepartures.sort((a, b) => {
+      const aMin = a.minutes != null ? a.minutes : 999;
+      const bMin = b.minutes != null ? b.minutes : 999;
+      return aMin - bMin;
+    });
+
+    if (this._headerEl) {
+      this._headerEl.textContent = stationNames.join(' / ');
+    }
+
+    this._renderLed(allDepartures);
   }
 
-  _renderLed(departures, stationName) {
+  _renderLed(departures) {
     const ctx = this._ctx;
     const SCALE = 3;
     const W = this._canvas.width;
@@ -283,7 +298,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity: '', rows: 3, scroll_speed: 3000, show_platform: true, show_header: false, frame_style: 'panel' };
+    return { entities: [], rows: 3, scroll_speed: 3000, show_platform: true, show_header: false, frame_style: 'panel' };
   }
 }
 
@@ -402,12 +417,19 @@ class BvgDisplayCardEditor extends HTMLElement {
       this.attachShadow({ mode: 'open' });
     }
 
-    const entityValue = this._config.entity || '';
+    const entities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
+
+    const entityListHtml = entities.map((e, idx) => `
+      <div class="entity-row">
+        <input type="text" class="entity-input" data-idx="${idx}" value="${e}" placeholder="sensor.bvg_..._departures">
+        <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
+      </div>
+    `).join('');
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -464,12 +486,44 @@ class BvgDisplayCardEditor extends HTMLElement {
           height: 18px;
           accent-color: var(--primary-color);
         }
+        .entity-row {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+        .entity-row input {
+          flex: 1;
+        }
+        .remove-btn {
+          background: none;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 6px;
+          color: var(--error-color, #db4437);
+          cursor: pointer;
+          padding: 6px 10px;
+          font-size: 0.9rem;
+        }
+        .add-btn {
+          background: none;
+          border: 1px dashed var(--divider-color, #e0e0e0);
+          border-radius: 8px;
+          color: var(--primary-color);
+          cursor: pointer;
+          padding: 8px;
+          font-size: 0.85rem;
+          width: 100%;
+        }
+        .add-btn:hover {
+          background: var(--secondary-background-color, #f5f5f5);
+        }
       </style>
       <div class="form">
         <div class="field">
-          <label>Entity</label>
-          <span class="description">BVG departures sensor (sensor.bvg_*_departures)</span>
-          <input type="text" id="entity" value="${entityValue}" placeholder="sensor.bvg_..._departures">
+          <label>Stations</label>
+          <span class="description">Add one or more BVG departure sensors. Departures from all stations are merged and sorted.</span>
+          <div id="entity-list">${entityListHtml}</div>
+          <button class="add-btn" id="add-entity">+ Add station</button>
         </div>
         <div class="field">
           <label>Rows</label>
@@ -516,7 +570,7 @@ class BvgDisplayCardEditor extends HTMLElement {
           <div class="toggle-row">
             <div class="toggle-label">
               <label>Show Station Header</label>
-              <span class="description">Display station name above the panel</span>
+              <span class="description">Display station name(s) above the panel</span>
             </div>
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
           </div>
@@ -524,12 +578,27 @@ class BvgDisplayCardEditor extends HTMLElement {
       </div>
     `;
 
-    this.shadowRoot.getElementById('entity').addEventListener('change', (e) => {
-      this._updateConfig('entity', e.target.value);
+    // Entity list events
+    this.shadowRoot.querySelectorAll('.entity-input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.dataset.idx);
+        const newEntities = [...entities];
+        newEntities[idx] = e.target.value;
+        this._updateEntities(newEntities);
+      });
     });
-    this.shadowRoot.getElementById('entity').addEventListener('input', (e) => {
-      this._updateConfig('entity', e.target.value);
+    this.shadowRoot.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const idx = parseInt(e.target.dataset.idx);
+        const newEntities = entities.filter((_, i) => i !== idx);
+        this._updateEntities(newEntities);
+      });
     });
+    this.shadowRoot.getElementById('add-entity').addEventListener('click', () => {
+      const newEntities = [...entities, ''];
+      this._updateEntities(newEntities);
+    });
+
     this.shadowRoot.getElementById('rows').addEventListener('change', (e) => {
       this._updateConfig('rows', parseInt(e.target.value));
     });
@@ -547,8 +616,20 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
   }
 
+  _updateEntities(entities) {
+    this._config = { ...this._config, entities: entities };
+    // Remove legacy single entity key
+    delete this._config.entity;
+    this._fireConfigChanged();
+    this._render();
+  }
+
   _updateConfig(key, value) {
     this._config = { ...this._config, [key]: value };
+    this._fireConfigChanged();
+  }
+
+  _fireConfigChanged() {
     const event = new CustomEvent('config-changed', {
       detail: { config: this._config },
       bubbles: true,
@@ -558,8 +639,7 @@ class BvgDisplayCardEditor extends HTMLElement {
   }
 
   _updateEntityPicker() {
-    // If hass is available, we could enhance with autocomplete
-    // For now the text input works with any entity ID
+    // Handled via entity list in _render
   }
 }
 
