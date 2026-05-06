@@ -21,8 +21,11 @@ class BvgDisplayCard extends HTMLElement {
       throw new Error("Please define an entity (sensor.bvg_*_departures)");
     }
     this._config = config;
-    this._rows = config.rows || 4;
+    this._rows = config.rows || 3;
     this._scrollSpeed = config.scroll_speed || 3000;
+    this._showPlatform = config.show_platform !== false;
+    this._showHeader = config.show_header || false;
+    this._frameStyle = config.frame_style || 'panel';
     this._scrollIndex = 0;
     this._rendered = false;
   }
@@ -40,10 +43,17 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _render() {
+    const SCALE = 3;
+    const logicalH = this._rows * 10 + 2 + (this._showHeader ? 10 : 0);
+    const canvasW = 128 * SCALE;
+    const canvasH = logicalH * SCALE;
+    const frameClass = this._frameStyle === 'flat' ? 'bvg-panel-flat' : 'bvg-panel-frame';
+
     this.innerHTML = `
       <ha-card>
-        <div class="bvg-panel-frame">
-          <canvas class="bvg-canvas" width="384" height="96"></canvas>
+        ${this._showHeader ? '<div class="bvg-header"></div>' : ''}
+        <div class="${frameClass}">
+          <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
         </div>
       </ha-card>
       <style>
@@ -51,6 +61,17 @@ class BvgDisplayCard extends HTMLElement {
           background: #1a1a1a;
           padding: 12px;
           border-radius: 12px;
+          overflow: hidden;
+        }
+        .bvg-header {
+          color: #ffcc00;
+          font-family: monospace;
+          font-size: 0.85rem;
+          font-weight: bold;
+          padding: 0 4px 8px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .bvg-panel-frame {
           background: #000;
@@ -58,6 +79,11 @@ class BvgDisplayCard extends HTMLElement {
           border-radius: 6px;
           padding: 4px;
           box-shadow: inset 0 0 10px rgba(0,0,0,0.8);
+        }
+        .bvg-panel-flat {
+          background: #000;
+          border-radius: 4px;
+          padding: 2px;
         }
         .bvg-canvas {
           width: 100%;
@@ -70,6 +96,7 @@ class BvgDisplayCard extends HTMLElement {
     `;
     this._canvas = this.querySelector('.bvg-canvas');
     this._ctx = this._canvas.getContext('2d');
+    this._headerEl = this.querySelector('.bvg-header');
   }
 
   _startScroll() {
@@ -96,16 +123,18 @@ class BvgDisplayCard extends HTMLElement {
     const departures = entity.attributes.departures || [];
     const stationName = entity.attributes.station_name || '';
 
+    if (this._headerEl) {
+      this._headerEl.textContent = stationName;
+    }
+
     this._renderLed(departures, stationName);
   }
 
   _renderLed(departures, stationName) {
     const ctx = this._ctx;
-    const W = 384;  // 128 * 3 (scaled)
-    const H = 96;   // 32 * 3 (scaled)
     const SCALE = 3;
-    const LOGICAL_W = 128;
-    const LOGICAL_H = 32;
+    const W = this._canvas.width;
+    const H = this._canvas.height;
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
@@ -115,7 +144,7 @@ class BvgDisplayCard extends HTMLElement {
       return;
     }
 
-    const rows = Math.min(this._rows, 3);
+    const rows = this._rows;
     const rowHeight = 10;
     const startIdx = this._scrollIndex % Math.max(1, departures.length - rows + 1);
 
@@ -123,7 +152,7 @@ class BvgDisplayCard extends HTMLElement {
       const depIdx = startIdx + i;
       if (depIdx >= departures.length) break;
       const dep = departures[depIdx];
-      const y = i * rowHeight + 2;
+      const y = i * rowHeight + 1;
 
       this._renderDepartureRow(ctx, dep, y, SCALE);
     }
@@ -154,12 +183,23 @@ class BvgDisplayCard extends HTMLElement {
     const timeStr = this._formatTime(dep);
     const timeColor = dep.cancelled ? '#ff0000' : (dep.delay > 0 ? '#ff5050' : '#ffcc00');
     const timeWidth = timeStr.length * 6;
-    const timeX = W - timeWidth;
+    let timeX = W - timeWidth;
+
+    // Platform (between time and direction, if enabled and available)
+    let platformWidth = 0;
+    if (this._showPlatform && dep.platform) {
+      const platStr = dep.platform;
+      platformWidth = platStr.length * 6 + 6; // extra gap
+      const platX = W - timeWidth - platformWidth;
+      this._drawString(ctx, platStr, platX, y + 1, '#888888', scale);
+    }
+
     this._drawString(ctx, timeStr, timeX, y + 1, timeColor, scale);
 
-    // Direction (white, between badge and time)
+    // Direction (white, between badge and time/platform)
     const dirX = badgeWidth + 2;
-    const availableChars = Math.floor((timeX - dirX - 2) / 6);
+    const rightEdge = W - timeWidth - platformWidth - 2;
+    const availableChars = Math.floor((rightEdge - dirX) / 6);
     let direction = dep.direction || '';
     if (direction.length > availableChars) {
       direction = direction.substring(0, Math.max(0, availableChars - 1)) + '.';
@@ -235,7 +275,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 3;
+    return Math.max(2, Math.ceil(this._rows * 1.2));
   }
 
   static getConfigElement() {
@@ -243,7 +283,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity: '', rows: 3, scroll_speed: 3000 };
+    return { entity: '', rows: 3, scroll_speed: 3000, show_platform: true, show_header: false, frame_style: 'panel' };
   }
 }
 
@@ -365,6 +405,9 @@ class BvgDisplayCardEditor extends HTMLElement {
     const entityValue = this._config.entity || '';
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
+    const showPlatform = this._config.show_platform !== false;
+    const showHeader = this._config.show_header || false;
+    const frameStyle = this._config.frame_style || 'panel';
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -391,7 +434,7 @@ class BvgDisplayCardEditor extends HTMLElement {
           font-size: 0.75rem;
           color: var(--secondary-text-color);
         }
-        select, input {
+        select, input[type="text"] {
           padding: 8px 12px;
           border: 1px solid var(--divider-color, #e0e0e0);
           border-radius: 8px;
@@ -399,54 +442,84 @@ class BvgDisplayCardEditor extends HTMLElement {
           color: var(--primary-text-color);
           font-size: 0.95rem;
           outline: none;
+          width: 100%;
+          box-sizing: border-box;
         }
         select:focus, input:focus {
           border-color: var(--primary-color);
         }
-        .entity-picker {
-          position: relative;
+        .toggle-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 4px 0;
         }
-        input[type="text"] {
-          width: 100%;
-          box-sizing: border-box;
+        .toggle-label {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
         }
-        .preview-hint {
-          background: var(--secondary-background-color, #f5f5f5);
-          border-radius: 8px;
-          padding: 12px;
-          font-size: 0.8rem;
-          color: var(--secondary-text-color);
+        input[type="checkbox"] {
+          width: 18px;
+          height: 18px;
+          accent-color: var(--primary-color);
         }
       </style>
       <div class="form">
         <div class="field">
-          <label for="entity">Entity</label>
-          <span class="description">Select a BVG departures sensor (sensor.bvg_*_departures)</span>
+          <label>Entity</label>
+          <span class="description">BVG departures sensor (sensor.bvg_*_departures)</span>
           <input type="text" id="entity" value="${entityValue}" placeholder="sensor.bvg_..._departures">
         </div>
         <div class="field">
-          <label for="rows">Rows</label>
-          <span class="description">Number of departure rows shown on the panel (1–4)</span>
+          <label>Rows</label>
+          <span class="description">Number of departure rows visible at once</span>
           <select id="rows">
             <option value="1" ${rowsValue === 1 ? 'selected' : ''}>1</option>
             <option value="2" ${rowsValue === 2 ? 'selected' : ''}>2</option>
-            <option value="3" ${rowsValue === 3 ? 'selected' : ''}>3</option>
+            <option value="3" ${rowsValue === 3 ? 'selected' : ''}>3 (Default)</option>
             <option value="4" ${rowsValue === 4 ? 'selected' : ''}>4</option>
+            <option value="5" ${rowsValue === 5 ? 'selected' : ''}>5</option>
+            <option value="6" ${rowsValue === 6 ? 'selected' : ''}>6</option>
           </select>
         </div>
         <div class="field">
-          <label for="scroll_speed">Scroll Speed (ms)</label>
-          <span class="description">How fast departures cycle (in milliseconds)</span>
+          <label>Scroll Speed</label>
+          <span class="description">How fast departures cycle</span>
           <select id="scroll_speed">
-            <option value="1500" ${scrollValue === 1500 ? 'selected' : ''}>1500 (Fast)</option>
-            <option value="2000" ${scrollValue === 2000 ? 'selected' : ''}>2000</option>
-            <option value="3000" ${scrollValue === 3000 ? 'selected' : ''}>3000 (Default)</option>
-            <option value="4000" ${scrollValue === 4000 ? 'selected' : ''}>4000</option>
-            <option value="5000" ${scrollValue === 5000 ? 'selected' : ''}>5000 (Slow)</option>
+            <option value="1500" ${scrollValue === 1500 ? 'selected' : ''}>1.5s (Fast)</option>
+            <option value="2000" ${scrollValue === 2000 ? 'selected' : ''}>2s</option>
+            <option value="3000" ${scrollValue === 3000 ? 'selected' : ''}>3s (Default)</option>
+            <option value="4000" ${scrollValue === 4000 ? 'selected' : ''}>4s</option>
+            <option value="5000" ${scrollValue === 5000 ? 'selected' : ''}>5s</option>
+            <option value="8000" ${scrollValue === 8000 ? 'selected' : ''}>8s (Slow)</option>
           </select>
         </div>
-        <div class="preview-hint">
-          💡 The card renders departures as a pixel-art LED matrix panel with auto-scrolling and color-coded transit lines.
+        <div class="field">
+          <label>Frame Style</label>
+          <span class="description">Appearance of the panel border</span>
+          <select id="frame_style">
+            <option value="panel" ${frameStyle === 'panel' ? 'selected' : ''}>Panel (3D frame)</option>
+            <option value="flat" ${frameStyle === 'flat' ? 'selected' : ''}>Flat (minimal)</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <label>Show Platform</label>
+              <span class="description">Display platform/track number if available</span>
+            </div>
+            <input type="checkbox" id="show_platform" ${showPlatform ? 'checked' : ''}>
+          </div>
+        </div>
+        <div class="field">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <label>Show Station Header</label>
+              <span class="description">Display station name above the panel</span>
+            </div>
+            <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
+          </div>
         </div>
       </div>
     `;
@@ -462,6 +535,15 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
     this.shadowRoot.getElementById('scroll_speed').addEventListener('change', (e) => {
       this._updateConfig('scroll_speed', parseInt(e.target.value));
+    });
+    this.shadowRoot.getElementById('frame_style').addEventListener('change', (e) => {
+      this._updateConfig('frame_style', e.target.value);
+    });
+    this.shadowRoot.getElementById('show_platform').addEventListener('change', (e) => {
+      this._updateConfig('show_platform', e.target.checked);
+    });
+    this.shadowRoot.getElementById('show_header').addEventListener('change', (e) => {
+      this._updateConfig('show_header', e.target.checked);
     });
   }
 
