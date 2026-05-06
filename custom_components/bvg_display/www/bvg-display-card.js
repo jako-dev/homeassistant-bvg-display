@@ -130,72 +130,103 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _renderDepartureRow(ctx, dep, y, scale) {
+    const W = 128;
     // Line badge
-    const lineColor = this._getLineColor(dep.product);
-    const lineText = dep.line || '?';
-    const lineWidth = Math.max(lineText.length * 5 + 2, 14);
+    const lineColor = this._getLineColor(dep.product, dep.line);
+    const lineText = (dep.line || '?').toUpperCase();
+    const badgeWidth = lineText.length * 6 + 3;
 
     // Draw badge background
-    for (let px = 0; px < lineWidth; px++) {
-      for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < badgeWidth; px++) {
+      for (let py = 0; py < 9; py++) {
         ctx.fillStyle = lineColor;
-        ctx.fillRect((1 + px) * scale, (y + py) * scale, scale, scale);
+        ctx.fillRect((px) * scale, (y + py) * scale, scale, scale);
       }
     }
 
-    // Line text on badge
-    this._drawString(ctx, lineText, 2, y + 1, '#000', scale);
+    // Line text in badge (black or white depending on brightness)
+    const rgb = this._hexToRgb(lineColor);
+    const brightness = (rgb[0] * 299 + rgb[1] * 587 + rgb[2] * 114) / 1000;
+    const badgeTextColor = brightness > 128 ? '#000000' : '#ffffff';
+    this._drawString(ctx, lineText, 2, y + 1, badgeTextColor, scale);
 
-    // Direction
-    const dirX = lineWidth + 4;
-    const direction = this._truncate(dep.direction, 16);
-    this._drawString(ctx, direction, dirX, y + 1, '#ffcc00', scale);
+    // Time string (right-aligned)
+    const timeStr = this._formatTime(dep);
+    const timeColor = dep.cancelled ? '#ff0000' : (dep.delay > 0 ? '#ff5050' : '#ffcc00');
+    const timeWidth = timeStr.length * 6;
+    const timeX = W - timeWidth;
+    this._drawString(ctx, timeStr, timeX, y + 1, timeColor, scale);
 
-    // Minutes
-    const minStr = dep.cancelled ? 'X' : (dep.minutes != null ? String(dep.minutes) : '--');
-    const minColor = dep.cancelled ? '#ff3333' : (dep.delay > 0 ? '#ff6600' : '#00ff00');
-    const minX = 128 - (minStr.length * 5 + 8);
-    this._drawString(ctx, minStr, minX, y + 1, minColor, scale);
-
-    // "min" label
-    this._drawString(ctx, 'min', 128 - 15, y + 1, '#888888', scale);
+    // Direction (white, between badge and time)
+    const dirX = badgeWidth + 2;
+    const availableChars = Math.floor((timeX - dirX - 2) / 6);
+    let direction = dep.direction || '';
+    if (direction.length > availableChars) {
+      direction = direction.substring(0, Math.max(0, availableChars - 1)) + '.';
+    }
+    const dirColor = dep.cancelled ? '#666666' : '#ffffff';
+    this._drawString(ctx, direction, dirX, y + 1, dirColor, scale);
   }
 
-  _getLineColor(product) {
+  _formatTime(dep) {
+    if (dep.cancelled) return 'X';
+    const min = dep.minutes;
+    if (min == null) return '--';
+    if (min <= 0) return 'jetzt';
+    if (min < 60) return min + ' min';
+    return min + "'";
+  }
+
+  _hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    return [parseInt(h.substring(0,2), 16), parseInt(h.substring(2,4), 16), parseInt(h.substring(4,6), 16)];
+  }
+
+  _getLineColor(product, lineName) {
+    // Specific line colors (Berlin)
+    const name = (lineName || '').toLowerCase().replace(/\s/g, '');
+    const specific = {
+      'u1': '#7dad4c', 'u2': '#da421e', 'u3': '#007a5b',
+      'u4': '#f0d722', 'u5': '#7e5330', 'u6': '#8c6dab',
+      'u7': '#528dba', 'u8': '#224f86', 'u9': '#f3791d',
+      's1': '#de4da4', 's2': '#005f27', 's3': '#0060aa',
+      's41': '#a23b1e', 's42': '#c26a37', 's5': '#ff5900',
+      's7': '#7760b0', 's8': '#55a822', 's9': '#8b1c62',
+      's25': '#005f27', 's26': '#005f27', 's46': '#c26a37',
+      'm1': '#be1414', 'm2': '#be1414', 'm4': '#be1414',
+      'm5': '#be1414', 'm6': '#be1414', 'm8': '#be1414',
+      'm10': '#be1414', 'm13': '#be1414', 'm17': '#be1414',
+    };
+    if (specific[name]) return specific[name];
+
     const colors = {
-      suburban: '#009933',
-      subway: '#0066cc',
-      tram: '#cc0000',
-      bus: '#993399',
-      ferry: '#009999',
-      express: '#666666',
-      regional: '#ff6600',
+      suburban: '#008d4f',
+      subway: '#0060aa',
+      tram: '#be1414',
+      bus: '#9b2790',
+      ferry: '#0089b4',
+      express: '#646464',
+      regional: '#e30613',
     };
     return colors[product] || '#ffcc00';
   }
 
-  _truncate(str, maxLen) {
-    if (!str) return '';
-    return str.length > maxLen ? str.substring(0, maxLen - 1) + '.' : str;
-  }
-
-  // 5x7 bitmap font (subset for LED look)
+  // 5x7 bitmap font - column encoded (5 cols, 7 bits per col, LSB=top)
   _drawString(ctx, text, x, y, color, scale) {
-    const chars = text.toUpperCase();
     let curX = x;
-    for (let i = 0; i < chars.length; i++) {
-      this._drawChar(ctx, chars[i], curX, y, color, scale);
-      curX += 5;
+    for (let i = 0; i < text.length; i++) {
+      this._drawChar(ctx, text[i], curX, y, color, scale);
+      curX += 6; // 5px char + 1px gap
     }
   }
 
   _drawChar(ctx, ch, x, y, color, scale) {
-    const bitmap = FONT_DATA[ch] || FONT_DATA['?'];
-    if (!bitmap) return;
-    for (let row = 0; row < 7; row++) {
-      const rowData = bitmap[row] || 0;
-      for (let col = 0; col < 4; col++) {
-        if (rowData & (1 << (3 - col))) {
+    const glyph = FONT_5x7[ch] || FONT_5x7[ch.toUpperCase()] || FONT_5x7['?'];
+    if (!glyph) return;
+    for (let col = 0; col < 5; col++) {
+      const colData = glyph[col];
+      for (let row = 0; row < 7; row++) {
+        if (colData & (1 << row)) {
           ctx.fillStyle = color;
           ctx.fillRect((x + col) * scale, (y + row) * scale, scale, scale);
         }
@@ -216,54 +247,81 @@ class BvgDisplayCard extends HTMLElement {
   }
 }
 
-// 4x7 pixel font data
-const FONT_DATA = {
-  ' ': [0b0000, 0b0000, 0b0000, 0b0000, 0b0000, 0b0000, 0b0000],
-  '0': [0b0110, 0b1001, 0b1011, 0b1101, 0b1001, 0b1001, 0b0110],
-  '1': [0b0010, 0b0110, 0b0010, 0b0010, 0b0010, 0b0010, 0b0111],
-  '2': [0b0110, 0b1001, 0b0001, 0b0010, 0b0100, 0b1000, 0b1111],
-  '3': [0b0110, 0b1001, 0b0001, 0b0110, 0b0001, 0b1001, 0b0110],
-  '4': [0b1001, 0b1001, 0b1001, 0b1111, 0b0001, 0b0001, 0b0001],
-  '5': [0b1111, 0b1000, 0b1110, 0b0001, 0b0001, 0b1001, 0b0110],
-  '6': [0b0110, 0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b0110],
-  '7': [0b1111, 0b0001, 0b0010, 0b0010, 0b0100, 0b0100, 0b0100],
-  '8': [0b0110, 0b1001, 0b1001, 0b0110, 0b1001, 0b1001, 0b0110],
-  '9': [0b0110, 0b1001, 0b1001, 0b0111, 0b0001, 0b0001, 0b0110],
-  'A': [0b0110, 0b1001, 0b1001, 0b1111, 0b1001, 0b1001, 0b1001],
-  'B': [0b1110, 0b1001, 0b1001, 0b1110, 0b1001, 0b1001, 0b1110],
-  'C': [0b0110, 0b1001, 0b1000, 0b1000, 0b1000, 0b1001, 0b0110],
-  'D': [0b1110, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b1110],
-  'E': [0b1111, 0b1000, 0b1000, 0b1110, 0b1000, 0b1000, 0b1111],
-  'F': [0b1111, 0b1000, 0b1000, 0b1110, 0b1000, 0b1000, 0b1000],
-  'G': [0b0110, 0b1001, 0b1000, 0b1011, 0b1001, 0b1001, 0b0110],
-  'H': [0b1001, 0b1001, 0b1001, 0b1111, 0b1001, 0b1001, 0b1001],
-  'I': [0b0111, 0b0010, 0b0010, 0b0010, 0b0010, 0b0010, 0b0111],
-  'J': [0b0001, 0b0001, 0b0001, 0b0001, 0b0001, 0b1001, 0b0110],
-  'K': [0b1001, 0b1010, 0b1100, 0b1000, 0b1100, 0b1010, 0b1001],
-  'L': [0b1000, 0b1000, 0b1000, 0b1000, 0b1000, 0b1000, 0b1111],
-  'M': [0b1001, 0b1111, 0b1111, 0b1001, 0b1001, 0b1001, 0b1001],
-  'N': [0b1001, 0b1101, 0b1101, 0b1011, 0b1011, 0b1001, 0b1001],
-  'O': [0b0110, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110],
-  'P': [0b1110, 0b1001, 0b1001, 0b1110, 0b1000, 0b1000, 0b1000],
-  'Q': [0b0110, 0b1001, 0b1001, 0b1001, 0b1011, 0b1010, 0b0111],
-  'R': [0b1110, 0b1001, 0b1001, 0b1110, 0b1010, 0b1001, 0b1001],
-  'S': [0b0110, 0b1001, 0b1000, 0b0110, 0b0001, 0b1001, 0b0110],
-  'T': [0b1111, 0b0010, 0b0010, 0b0010, 0b0010, 0b0010, 0b0010],
-  'U': [0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110],
-  'V': [0b1001, 0b1001, 0b1001, 0b1001, 0b1001, 0b0110, 0b0010],
-  'W': [0b1001, 0b1001, 0b1001, 0b1001, 0b1111, 0b1111, 0b1001],
-  'X': [0b1001, 0b1001, 0b0110, 0b0110, 0b0110, 0b1001, 0b1001],
-  'Y': [0b1001, 0b1001, 0b0110, 0b0010, 0b0010, 0b0010, 0b0010],
-  'Z': [0b1111, 0b0001, 0b0010, 0b0100, 0b1000, 0b1000, 0b1111],
-  '-': [0b0000, 0b0000, 0b0000, 0b1111, 0b0000, 0b0000, 0b0000],
-  '.': [0b0000, 0b0000, 0b0000, 0b0000, 0b0000, 0b0000, 0b0010],
-  '/': [0b0001, 0b0001, 0b0010, 0b0010, 0b0100, 0b0100, 0b1000],
-  ':': [0b0000, 0b0010, 0b0010, 0b0000, 0b0010, 0b0010, 0b0000],
-  '?': [0b0110, 0b1001, 0b0001, 0b0010, 0b0010, 0b0000, 0b0010],
-  '!': [0b0010, 0b0010, 0b0010, 0b0010, 0b0010, 0b0000, 0b0010],
-  '+': [0b0000, 0b0010, 0b0010, 0b0111, 0b0010, 0b0010, 0b0000],
-  '(': [0b0010, 0b0100, 0b0100, 0b0100, 0b0100, 0b0100, 0b0010],
-  ')': [0b0100, 0b0010, 0b0010, 0b0010, 0b0010, 0b0010, 0b0100],
+// 5x7 column-encoded font (5 columns per char, 7 bits per column, LSB = top row)
+const FONT_5x7 = {
+  ' ': [0x00, 0x00, 0x00, 0x00, 0x00],
+  '!': [0x00, 0x00, 0x5F, 0x00, 0x00],
+  "'": [0x00, 0x05, 0x03, 0x00, 0x00],
+  '(': [0x00, 0x1C, 0x22, 0x41, 0x00],
+  ')': [0x00, 0x41, 0x22, 0x1C, 0x00],
+  '+': [0x08, 0x08, 0x3E, 0x08, 0x08],
+  '-': [0x08, 0x08, 0x08, 0x08, 0x08],
+  '.': [0x00, 0x60, 0x60, 0x00, 0x00],
+  '/': [0x20, 0x10, 0x08, 0x04, 0x02],
+  '0': [0x3E, 0x51, 0x49, 0x45, 0x3E],
+  '1': [0x00, 0x42, 0x7F, 0x40, 0x00],
+  '2': [0x42, 0x61, 0x51, 0x49, 0x46],
+  '3': [0x21, 0x41, 0x45, 0x4B, 0x31],
+  '4': [0x18, 0x14, 0x12, 0x7F, 0x10],
+  '5': [0x27, 0x45, 0x45, 0x45, 0x39],
+  '6': [0x3C, 0x4A, 0x49, 0x49, 0x30],
+  '7': [0x01, 0x71, 0x09, 0x05, 0x03],
+  '8': [0x36, 0x49, 0x49, 0x49, 0x36],
+  '9': [0x06, 0x49, 0x49, 0x29, 0x1E],
+  ':': [0x00, 0x36, 0x36, 0x00, 0x00],
+  '?': [0x02, 0x01, 0x51, 0x09, 0x06],
+  'A': [0x7E, 0x11, 0x11, 0x11, 0x7E],
+  'B': [0x7F, 0x49, 0x49, 0x49, 0x36],
+  'C': [0x3E, 0x41, 0x41, 0x41, 0x22],
+  'D': [0x7F, 0x41, 0x41, 0x22, 0x1C],
+  'E': [0x7F, 0x49, 0x49, 0x49, 0x41],
+  'F': [0x7F, 0x09, 0x09, 0x09, 0x01],
+  'G': [0x3E, 0x41, 0x49, 0x49, 0x7A],
+  'H': [0x7F, 0x08, 0x08, 0x08, 0x7F],
+  'I': [0x00, 0x41, 0x7F, 0x41, 0x00],
+  'J': [0x20, 0x40, 0x41, 0x3F, 0x01],
+  'K': [0x7F, 0x08, 0x14, 0x22, 0x41],
+  'L': [0x7F, 0x40, 0x40, 0x40, 0x40],
+  'M': [0x7F, 0x02, 0x0C, 0x02, 0x7F],
+  'N': [0x7F, 0x04, 0x08, 0x10, 0x7F],
+  'O': [0x3E, 0x41, 0x41, 0x41, 0x3E],
+  'P': [0x7F, 0x09, 0x09, 0x09, 0x06],
+  'Q': [0x3E, 0x41, 0x51, 0x21, 0x5E],
+  'R': [0x7F, 0x09, 0x19, 0x29, 0x46],
+  'S': [0x46, 0x49, 0x49, 0x49, 0x31],
+  'T': [0x01, 0x01, 0x7F, 0x01, 0x01],
+  'U': [0x3F, 0x40, 0x40, 0x40, 0x3F],
+  'V': [0x1F, 0x20, 0x40, 0x20, 0x1F],
+  'W': [0x3F, 0x40, 0x38, 0x40, 0x3F],
+  'X': [0x63, 0x14, 0x08, 0x14, 0x63],
+  'Y': [0x07, 0x08, 0x70, 0x08, 0x07],
+  'Z': [0x61, 0x51, 0x49, 0x45, 0x43],
+  'a': [0x20, 0x54, 0x54, 0x54, 0x78],
+  'b': [0x7F, 0x48, 0x44, 0x44, 0x38],
+  'c': [0x38, 0x44, 0x44, 0x44, 0x20],
+  'd': [0x38, 0x44, 0x44, 0x48, 0x7F],
+  'e': [0x38, 0x54, 0x54, 0x54, 0x18],
+  'f': [0x08, 0x7E, 0x09, 0x01, 0x02],
+  'g': [0x0C, 0x52, 0x52, 0x52, 0x3E],
+  'h': [0x7F, 0x08, 0x04, 0x04, 0x78],
+  'i': [0x00, 0x44, 0x7D, 0x40, 0x00],
+  'j': [0x20, 0x40, 0x44, 0x3D, 0x00],
+  'k': [0x7F, 0x10, 0x28, 0x44, 0x00],
+  'l': [0x00, 0x41, 0x7F, 0x40, 0x00],
+  'm': [0x7C, 0x04, 0x18, 0x04, 0x78],
+  'n': [0x7C, 0x08, 0x04, 0x04, 0x78],
+  'o': [0x38, 0x44, 0x44, 0x44, 0x38],
+  'p': [0x7C, 0x14, 0x14, 0x14, 0x08],
+  'q': [0x08, 0x14, 0x14, 0x18, 0x7C],
+  'r': [0x7C, 0x08, 0x04, 0x04, 0x08],
+  's': [0x48, 0x54, 0x54, 0x54, 0x20],
+  't': [0x04, 0x3F, 0x44, 0x40, 0x20],
+  'u': [0x3C, 0x40, 0x40, 0x20, 0x7C],
+  'v': [0x1C, 0x20, 0x40, 0x20, 0x1C],
+  'w': [0x3C, 0x40, 0x30, 0x40, 0x3C],
+  'x': [0x44, 0x28, 0x10, 0x28, 0x44],
+  'y': [0x0C, 0x50, 0x50, 0x50, 0x3C],
+  'z': [0x44, 0x64, 0x54, 0x4C, 0x44],
 };
 
 customElements.define('bvg-display-card', BvgDisplayCard);
