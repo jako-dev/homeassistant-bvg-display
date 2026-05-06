@@ -11,40 +11,97 @@ class BvgDisplayCard extends HTMLElement {
     };
   }
 
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    this._hass = null;
+    this._config = null;
+    this._entityConfigs = [];
+    this._scrollIndex = 0;
+    this._scrollTimer = null;
+    this._rendered = false;
+    this._observer = null;
+    this._visible = true;
+  }
+
   set hass(hass) {
     this._hass = hass;
-    this._updateCard();
+    if (this._rendered) {
+      this._updateCard();
+    }
   }
 
   setConfig(config) {
-    if (!config.entity && (!config.entities || config.entities.length === 0)) {
-      throw new Error("Please define 'entity' or 'entities' (sensor.bvg_*_departures)");
+    if (!config) {
+      throw new Error("No configuration provided.");
     }
-    this._config = config;
-    this._entities = config.entities || [config.entity];
-    this._rows = config.rows || 3;
-    this._scrollSpeed = config.scroll_speed || 3000;
+    if (!config.entity && (!config.entities || !Array.isArray(config.entities) || config.entities.length === 0)) {
+      throw new Error("Please define 'entity' or 'entities' with at least one BVG departure sensor (e.g. sensor.bvg_alexanderplatz_departures).");
+    }
+
+    this._config = { ...config };
+
+    // Normalize entities: support string[] or {entity, walk_time}[]
+    const rawEntities = config.entities || (config.entity ? [config.entity] : []);
+    this._entityConfigs = rawEntities.map(e => {
+      if (typeof e === 'string') {
+        return { entity: e, walk_time: 0 };
+      }
+      if (!e || typeof e !== 'object' || !e.entity) {
+        throw new Error("Each entity must be a string or an object with an 'entity' key.");
+      }
+      return { entity: e.entity, walk_time: parseInt(e.walk_time, 10) || 0 };
+    });
+
+    this._rows = parseInt(config.rows, 10) || 3;
+    this._scrollSpeed = parseInt(config.scroll_speed, 10) || 3000;
     this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
-    this._walkTime = config.walk_time || 0;
     this._scrollIndex = 0;
-    this._rendered = false;
+
+    // Re-render if already connected (config change via editor)
+    if (this._rendered) {
+      this._render();
+      this._updateCard();
+      this._restartScroll();
+    }
   }
 
   connectedCallback() {
-    if (!this._rendered) {
-      this._render();
-      this._rendered = true;
-    }
-    if (this._scrollEnabled) {
-      this._startScroll();
-    }
+    this._render();
+    this._rendered = true;
+    this._updateCard();
+    this._restartScroll();
+    this._observeVisibility();
   }
 
   disconnectedCallback() {
     this._stopScroll();
+    this._unobserveVisibility();
+  }
+
+  _observeVisibility() {
+    if (typeof IntersectionObserver === 'undefined') return;
+    this._unobserveVisibility();
+    this._observer = new IntersectionObserver((entries) => {
+      const wasVisible = this._visible;
+      this._visible = entries[0].isIntersecting;
+      if (this._visible && !wasVisible) {
+        this._restartScroll();
+      } else if (!this._visible && wasVisible) {
+        this._stopScroll();
+      }
+    }, { threshold: 0.1 });
+    this._observer.observe(this);
+  }
+
+  _unobserveVisibility() {
+    if (this._observer) {
+      this._observer.disconnect();
+      this._observer = null;
+    }
   }
 
   _render() {
@@ -54,14 +111,11 @@ class BvgDisplayCard extends HTMLElement {
     const canvasH = logicalH * SCALE;
     const frameClass = this._frameStyle === 'flat' ? 'bvg-panel-flat' : 'bvg-panel-frame';
 
-    this.innerHTML = `
-      <ha-card>
-        ${this._showHeader ? '<div class="bvg-header"></div>' : ''}
-        <div class="${frameClass}">
-          <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
-        </div>
-      </ha-card>
+    this.shadowRoot.innerHTML = `
       <style>
+        :host {
+          display: block;
+        }
         ha-card {
           background: #1a1a1a;
           padding: 12px;
@@ -97,19 +151,37 @@ class BvgDisplayCard extends HTMLElement {
           image-rendering: pixelated;
           image-rendering: crisp-edges;
         }
+        .bvg-error {
+          color: #ff5050;
+          font-size: 0.85rem;
+          padding: 8px;
+          font-family: monospace;
+        }
       </style>
+      <ha-card>
+        ${this._showHeader ? '<div class="bvg-header"></div>' : ''}
+        <div class="${frameClass}">
+          <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
+        </div>
+      </ha-card>
     `;
-    this._canvas = this.querySelector('.bvg-canvas');
+    this._canvas = this.shadowRoot.querySelector('.bvg-canvas');
     this._ctx = this._canvas.getContext('2d');
-    this._headerEl = this.querySelector('.bvg-header');
+    this._headerEl = this.shadowRoot.querySelector('.bvg-header');
+  }
+
+  _restartScroll() {
+    this._stopScroll();
+    if (this._scrollEnabled && this._visible) {
+      this._scrollTimer = setInterval(() => {
+        this._scrollIndex++;
+        this._updateCard();
+      }, this._scrollSpeed);
+    }
   }
 
   _startScroll() {
-    this._stopScroll();
-    this._scrollTimer = setInterval(() => {
-      this._scrollIndex++;
-      this._updateCard();
-    }, this._scrollSpeed);
+    this._restartScroll();
   }
 
   _stopScroll() {
@@ -122,39 +194,48 @@ class BvgDisplayCard extends HTMLElement {
   _updateCard() {
     if (!this._hass || !this._config || !this._canvas) return;
 
-    // Collect departures from all configured entities
+    // Collect departures from all configured entities, filtering per-station walk time
     let allDepartures = [];
     let stationNames = [];
+    let unavailable = [];
 
-    for (const entityId of this._entities) {
-      const entity = this._hass.states[entityId];
-      if (!entity) continue;
-      const deps = entity.attributes.departures || [];
-      const name = entity.attributes.station_name || '';
+    for (const ec of this._entityConfigs) {
+      const entity = this._hass.states[ec.entity];
+      if (!entity) {
+        unavailable.push(ec.entity);
+        continue;
+      }
+      if (entity.state === 'unavailable' || entity.state === 'unknown') {
+        unavailable.push(ec.entity);
+        continue;
+      }
+      const attrs = entity.attributes || {};
+      const deps = Array.isArray(attrs.departures) ? attrs.departures : [];
+      const name = attrs.station_name || '';
       if (name && !stationNames.includes(name)) stationNames.push(name);
-      allDepartures = allDepartures.concat(deps);
+      // Filter by per-station walk time
+      const walkTime = ec.walk_time || 0;
+      const filtered = walkTime > 0
+        ? deps.filter(d => typeof d.minutes === 'number' && d.minutes >= walkTime)
+        : deps;
+      allDepartures = allDepartures.concat(filtered);
     }
 
     // Sort by minutes (soonest first)
     allDepartures.sort((a, b) => {
-      const aMin = a.minutes != null ? a.minutes : 999;
-      const bMin = b.minutes != null ? b.minutes : 999;
+      const aMin = typeof a.minutes === 'number' ? a.minutes : 999;
+      const bMin = typeof b.minutes === 'number' ? b.minutes : 999;
       return aMin - bMin;
     });
-
-    // Filter by walk time (only show reachable departures)
-    if (this._walkTime > 0) {
-      allDepartures = allDepartures.filter(d => d.minutes != null && d.minutes >= this._walkTime);
-    }
 
     if (this._headerEl) {
       this._headerEl.textContent = stationNames.join(' / ');
     }
 
-    this._renderLed(allDepartures);
+    this._renderLed(allDepartures, unavailable);
   }
 
-  _renderLed(departures) {
+  _renderLed(departures, unavailable) {
     const ctx = this._ctx;
     const SCALE = 3;
     const W = this._canvas.width;
@@ -162,6 +243,12 @@ class BvgDisplayCard extends HTMLElement {
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
+
+    if (unavailable && unavailable.length > 0 && (!departures || departures.length === 0)) {
+      this._drawString(ctx, 'Sensor nicht', 4, 2, '#ff5050', SCALE);
+      this._drawString(ctx, 'verfuegbar', 4, 12, '#ff5050', SCALE);
+      return;
+    }
 
     if (!departures || departures.length === 0) {
       this._drawString(ctx, 'Keine Abfahrten', 4, 12, '#ffcc00', SCALE);
@@ -178,7 +265,8 @@ class BvgDisplayCard extends HTMLElement {
         this._renderDepartureRow(ctx, departures[i], y, SCALE);
       }
     } else {
-      const startIdx = this._scrollIndex % Math.max(1, departures.length - rows + 1);
+      const maxStart = Math.max(1, departures.length - rows + 1);
+      const startIdx = this._scrollIndex % maxStart;
       for (let i = 0; i < rows; i++) {
         const depIdx = startIdx + i;
         if (depIdx >= departures.length) break;
@@ -190,6 +278,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _renderDepartureRow(ctx, dep, y, scale) {
+    if (!dep) return;
     const W = 128;
     // Line badge
     const lineColor = this._getLineColor(dep.product, dep.line);
@@ -249,8 +338,14 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _hexToRgb(hex) {
+    if (!hex || typeof hex !== 'string') return [255, 204, 0];
     const h = hex.replace('#', '');
-    return [parseInt(h.substring(0,2), 16), parseInt(h.substring(2,4), 16), parseInt(h.substring(4,6), 16)];
+    if (h.length !== 6) return [255, 204, 0];
+    const r = parseInt(h.substring(0, 2), 16);
+    const g = parseInt(h.substring(2, 4), 16);
+    const b = parseInt(h.substring(4, 6), 16);
+    if (isNaN(r) || isNaN(g) || isNaN(b)) return [255, 204, 0];
+    return [r, g, b];
   }
 
   _getLineColor(product, lineName) {
@@ -314,7 +409,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel', walk_time: 0 };
+    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel' };
   }
 }
 
@@ -433,18 +528,19 @@ class BvgDisplayCardEditor extends HTMLElement {
       this.attachShadow({ mode: 'open' });
     }
 
-    const entities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
+    const rawEntities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
+    const entities = rawEntities.map(e => typeof e === 'string' ? { entity: e, walk_time: 0 } : { entity: e.entity, walk_time: e.walk_time || 0 });
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
     const scrollEnabled = this._config.scroll_enabled !== false;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
-    const walkTime = this._config.walk_time || 0;
 
     const entityListHtml = entities.map((e, idx) => `
       <div class="entity-row">
-        <input type="text" class="entity-input" data-idx="${idx}" value="${e}" placeholder="sensor.bvg_..._departures">
+        <input type="text" class="entity-input" data-idx="${idx}" value="${e.entity}" placeholder="sensor.bvg_..._departures">
+        <input type="number" class="walk-input" data-idx="${idx}" value="${e.walk_time}" min="0" max="30" placeholder="0" title="Walk time (min)">
         <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       </div>
     `).join('');
@@ -474,7 +570,7 @@ class BvgDisplayCardEditor extends HTMLElement {
           font-size: 0.75rem;
           color: var(--secondary-text-color);
         }
-        select, input[type="text"] {
+        select, input[type="text"], input[type="number"] {
           padding: 8px 12px;
           border: 1px solid var(--divider-color, #e0e0e0);
           border-radius: 8px;
@@ -510,8 +606,13 @@ class BvgDisplayCardEditor extends HTMLElement {
           align-items: center;
           margin-bottom: 8px;
         }
-        .entity-row input {
+        .entity-row .entity-input {
           flex: 1;
+        }
+        .entity-row .walk-input {
+          width: 60px;
+          flex: none;
+          text-align: center;
         }
         .remove-btn {
           background: none;
@@ -539,7 +640,12 @@ class BvgDisplayCardEditor extends HTMLElement {
       <div class="form">
         <div class="field">
           <label>Stations</label>
-          <span class="description">Add one or more BVG departure sensors. Departures from all stations are merged and sorted.</span>
+          <span class="description">Add one or more BVG departure sensors. Set walk time (min) per station to hide unreachable departures.</span>
+          <div style="display:flex;gap:8px;margin-bottom:4px;font-size:0.75rem;color:var(--secondary-text-color);">
+            <span style="flex:1;">Entity</span>
+            <span style="width:60px;text-align:center;">🚶 min</span>
+            <span style="width:34px;"></span>
+          </div>
           <div id="entity-list">${entityListHtml}</div>
           <button class="add-btn" id="add-entity">+ Add station</button>
         </div>
@@ -602,11 +708,6 @@ class BvgDisplayCardEditor extends HTMLElement {
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
           </div>
         </div>
-        <div class="field">
-          <label>Walk Time (minutes)</label>
-          <span class="description">Minutes to walk to station. Hides departures you can't reach in time.</span>
-          <input type="text" id="walk_time" value="${walkTime}" placeholder="0">
-        </div>
       </div>
     `;
 
@@ -615,7 +716,15 @@ class BvgDisplayCardEditor extends HTMLElement {
       input.addEventListener('change', (e) => {
         const idx = parseInt(e.target.dataset.idx);
         const newEntities = [...entities];
-        newEntities[idx] = e.target.value;
+        newEntities[idx] = { ...newEntities[idx], entity: e.target.value };
+        this._updateEntities(newEntities);
+      });
+    });
+    this.shadowRoot.querySelectorAll('.walk-input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.dataset.idx);
+        const newEntities = [...entities];
+        newEntities[idx] = { ...newEntities[idx], walk_time: Math.max(0, Math.min(30, parseInt(e.target.value) || 0)) };
         this._updateEntities(newEntities);
       });
     });
@@ -627,7 +736,7 @@ class BvgDisplayCardEditor extends HTMLElement {
       });
     });
     this.shadowRoot.getElementById('add-entity').addEventListener('click', () => {
-      const newEntities = [...entities, ''];
+      const newEntities = [...entities, { entity: '', walk_time: 0 }];
       this._updateEntities(newEntities);
     });
 
@@ -648,10 +757,6 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
     this.shadowRoot.getElementById('show_header').addEventListener('change', (e) => {
       this._updateConfig('show_header', e.target.checked);
-    });
-    this.shadowRoot.getElementById('walk_time').addEventListener('change', (e) => {
-      const val = Math.max(0, Math.min(30, parseInt(e.target.value) || 0));
-      this._updateConfig('walk_time', val);
     });
   }
 
