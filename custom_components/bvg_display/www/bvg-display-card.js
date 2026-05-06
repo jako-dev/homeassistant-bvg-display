@@ -28,6 +28,7 @@ class BvgDisplayCard extends HTMLElement {
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
+    this._walkTime = config.walk_time || 0;
     this._scrollIndex = 0;
     this._rendered = false;
   }
@@ -140,6 +141,11 @@ class BvgDisplayCard extends HTMLElement {
       const bMin = b.minutes != null ? b.minutes : 999;
       return aMin - bMin;
     });
+
+    // Filter by walk time (only show reachable departures)
+    if (this._walkTime > 0) {
+      allDepartures = allDepartures.filter(d => d.minutes != null && d.minutes >= this._walkTime);
+    }
 
     if (this._headerEl) {
       this._headerEl.textContent = stationNames.join(' / ');
@@ -308,7 +314,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel' };
+    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel', walk_time: 0 };
   }
 }
 
@@ -434,6 +440,7 @@ class BvgDisplayCardEditor extends HTMLElement {
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
+    const walkTime = this._config.walk_time || 0;
 
     const entityListHtml = entities.map((e, idx) => `
       <div class="entity-row">
@@ -595,6 +602,11 @@ class BvgDisplayCardEditor extends HTMLElement {
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
           </div>
         </div>
+        <div class="field">
+          <label>Walk Time (minutes)</label>
+          <span class="description">Minutes to walk to station. Hides departures you can't reach in time.</span>
+          <input type="text" id="walk_time" value="${walkTime}" placeholder="0">
+        </div>
       </div>
     `;
 
@@ -636,6 +648,10 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
     this.shadowRoot.getElementById('show_header').addEventListener('change', (e) => {
       this._updateConfig('show_header', e.target.checked);
+    });
+    this.shadowRoot.getElementById('walk_time').addEventListener('change', (e) => {
+      const val = Math.max(0, Math.min(30, parseInt(e.target.value) || 0));
+      this._updateConfig('walk_time', val);
     });
   }
 
