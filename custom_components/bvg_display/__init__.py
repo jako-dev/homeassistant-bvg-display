@@ -47,7 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the custom Lovelace card (only once across multiple entries)
     card_url = "/bvg-display/bvg-display-card.js"
     if DOMAIN not in hass.data.get("frontend_extra_js_registered", set()):
-        hass.http.async_register_static_paths([
+        await hass.http.async_register_static_paths([
             StaticPathConfig(
                 card_url,
                 str(Path(__file__).parent / "www" / "bvg-display-card.js"),
