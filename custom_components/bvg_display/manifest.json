@@ -1,0 +1,12 @@
+{
+  "domain": "bvg_display",
+  "name": "BVG Departure Display",
+  "codeowners": ["@jako-dev"],
+  "config_flow": true,
+  "documentation": "https://github.com/jako-dev/homeassistant-bvg-display",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/jako-dev/homeassistant-bvg-display/issues",
+  "requirements": ["aiohttp>=3.8.0"],
+  "version": "1.0.0"
+}

@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "BVG Station Search",
+        "description": "Search for a BVG/VBB station (e.g. {example})",
+        "data": {
+          "query": "Station name"
+        }
+      },
+      "select_station": {
+        "title": "Select Station",
+        "description": "Choose from the search results:",
+        "data": {
+          "station": "Station"
+        }
+      },
+      "options": {
+        "title": "Display Settings",
+        "description": "Configure departure count and transport filters",
+        "data": {
+          "departure_count": "Number of departures",
+          "suburban": "S-Bahn",
+          "subway": "U-Bahn",
+          "tram": "Tram",
+          "bus": "Bus",
+          "ferry": "Ferry",
+          "express": "IC/ICE",
+          "regional": "Regional"
+        }
+      }
+    },
+    "error": {
+      "no_results": "No stations found. Try a different search term.",
+      "cannot_connect": "Could not connect to BVG API."
+    },
+    "abort": {
+      "already_configured": "This station is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BVG Display Options",
+        "description": "Update departure count and transport filters",
+        "data": {
+          "departure_count": "Number of departures",
+          "suburban": "S-Bahn",
+          "subway": "U-Bahn",
+          "tram": "Tram",
+          "bus": "Bus",
+          "ferry": "Ferry",
+          "express": "IC/ICE",
+          "regional": "Regional"
+        }
+      }
+    }
+  }
+}
