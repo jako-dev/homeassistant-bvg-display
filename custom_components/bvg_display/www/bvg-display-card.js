@@ -207,8 +207,12 @@ class BvgDisplayCard extends HTMLElement {
     return 3;
   }
 
+  static getConfigElement() {
+    return document.createElement('bvg-display-card-editor');
+  }
+
   static getStubConfig() {
-    return { entity: '' };
+    return { entity: '', rows: 3, scroll_speed: 3000 };
   }
 }
 
@@ -264,10 +268,160 @@ const FONT_DATA = {
 
 customElements.define('bvg-display-card', BvgDisplayCard);
 
+/**
+ * BVG Display Card Editor
+ * Visual configuration UI for the Lovelace card
+ */
+class BvgDisplayCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = {};
+    this._hass = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._updateEntityPicker();
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  _render() {
+    if (this.shadowRoot) {
+      this.shadowRoot.innerHTML = '';
+    } else {
+      this.attachShadow({ mode: 'open' });
+    }
+
+    const entityValue = this._config.entity || '';
+    const rowsValue = this._config.rows || 3;
+    const scrollValue = this._config.scroll_speed || 3000;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host {
+          display: block;
+        }
+        .form {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          padding: 16px 0;
+        }
+        .field {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        label {
+          font-weight: 500;
+          font-size: 0.875rem;
+          color: var(--primary-text-color);
+        }
+        .description {
+          font-size: 0.75rem;
+          color: var(--secondary-text-color);
+        }
+        select, input {
+          padding: 8px 12px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 8px;
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color);
+          font-size: 0.95rem;
+          outline: none;
+        }
+        select:focus, input:focus {
+          border-color: var(--primary-color);
+        }
+        .entity-picker {
+          position: relative;
+        }
+        input[type="text"] {
+          width: 100%;
+          box-sizing: border-box;
+        }
+        .preview-hint {
+          background: var(--secondary-background-color, #f5f5f5);
+          border-radius: 8px;
+          padding: 12px;
+          font-size: 0.8rem;
+          color: var(--secondary-text-color);
+        }
+      </style>
+      <div class="form">
+        <div class="field">
+          <label for="entity">Entity</label>
+          <span class="description">Select a BVG departures sensor (sensor.bvg_*_departures)</span>
+          <input type="text" id="entity" value="${entityValue}" placeholder="sensor.bvg_..._departures">
+        </div>
+        <div class="field">
+          <label for="rows">Rows</label>
+          <span class="description">Number of departure rows shown on the panel (1–4)</span>
+          <select id="rows">
+            <option value="1" ${rowsValue === 1 ? 'selected' : ''}>1</option>
+            <option value="2" ${rowsValue === 2 ? 'selected' : ''}>2</option>
+            <option value="3" ${rowsValue === 3 ? 'selected' : ''}>3</option>
+            <option value="4" ${rowsValue === 4 ? 'selected' : ''}>4</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="scroll_speed">Scroll Speed (ms)</label>
+          <span class="description">How fast departures cycle (in milliseconds)</span>
+          <select id="scroll_speed">
+            <option value="1500" ${scrollValue === 1500 ? 'selected' : ''}>1500 (Fast)</option>
+            <option value="2000" ${scrollValue === 2000 ? 'selected' : ''}>2000</option>
+            <option value="3000" ${scrollValue === 3000 ? 'selected' : ''}>3000 (Default)</option>
+            <option value="4000" ${scrollValue === 4000 ? 'selected' : ''}>4000</option>
+            <option value="5000" ${scrollValue === 5000 ? 'selected' : ''}>5000 (Slow)</option>
+          </select>
+        </div>
+        <div class="preview-hint">
+          💡 The card renders departures as a pixel-art LED matrix panel with auto-scrolling and color-coded transit lines.
+        </div>
+      </div>
+    `;
+
+    this.shadowRoot.getElementById('entity').addEventListener('change', (e) => {
+      this._updateConfig('entity', e.target.value);
+    });
+    this.shadowRoot.getElementById('entity').addEventListener('input', (e) => {
+      this._updateConfig('entity', e.target.value);
+    });
+    this.shadowRoot.getElementById('rows').addEventListener('change', (e) => {
+      this._updateConfig('rows', parseInt(e.target.value));
+    });
+    this.shadowRoot.getElementById('scroll_speed').addEventListener('change', (e) => {
+      this._updateConfig('scroll_speed', parseInt(e.target.value));
+    });
+  }
+
+  _updateConfig(key, value) {
+    this._config = { ...this._config, [key]: value };
+    const event = new CustomEvent('config-changed', {
+      detail: { config: this._config },
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+
+  _updateEntityPicker() {
+    // If hass is available, we could enhance with autocomplete
+    // For now the text input works with any entity ID
+  }
+}
+
+customElements.define('bvg-display-card-editor', BvgDisplayCardEditor);
+
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'bvg-display-card',
   name: 'BVG Departure Display',
   description: 'LED matrix style BVG departure board',
   preview: true,
+  documentationURL: 'https://github.com/jako-dev/homeassistant-bvg-display',
 });
