@@ -35,23 +35,20 @@ class BvgDisplayCard extends HTMLElement {
     if (!config) {
       throw new Error("No configuration provided.");
     }
-    if (!config.entity && (!config.entities || !Array.isArray(config.entities) || config.entities.length === 0)) {
-      throw new Error("Please define 'entity' or 'entities' with at least one BVG departure sensor (e.g. sensor.bvg_alexanderplatz_departures).");
-    }
 
     this._config = { ...config };
 
     // Normalize entities: support string[] or {entity, walk_time}[]
     const rawEntities = config.entities || (config.entity ? [config.entity] : []);
-    this._entityConfigs = rawEntities.map(e => {
+    this._entityConfigs = [];
+    for (const e of rawEntities) {
       if (typeof e === 'string') {
-        return { entity: e, walk_time: 0 };
+        if (e) this._entityConfigs.push({ entity: e, walk_time: 0 });
+      } else if (e && typeof e === 'object' && e.entity) {
+        this._entityConfigs.push({ entity: e.entity, walk_time: parseInt(e.walk_time, 10) || 0 });
       }
-      if (!e || typeof e !== 'object' || !e.entity) {
-        throw new Error("Each entity must be a string or an object with an 'entity' key.");
-      }
-      return { entity: e.entity, walk_time: parseInt(e.walk_time, 10) || 0 };
-    });
+      // Skip invalid/empty entries silently (editor intermediate states)
+    }
 
     this._rows = parseInt(config.rows, 10) || 3;
     this._scrollSpeed = parseInt(config.scroll_speed, 10) || 3000;
@@ -194,6 +191,12 @@ class BvgDisplayCard extends HTMLElement {
   _updateCard() {
     if (!this._hass || !this._config || !this._canvas) return;
 
+    // No entities configured yet (stub config or editor in progress)
+    if (this._entityConfigs.length === 0) {
+      this._renderLed([], []);
+      return;
+    }
+
     // Collect departures from all configured entities, filtering per-station walk time
     let allDepartures = [];
     let stationNames = [];
@@ -251,7 +254,12 @@ class BvgDisplayCard extends HTMLElement {
     }
 
     if (!departures || departures.length === 0) {
-      this._drawString(ctx, 'Keine Abfahrten', 4, 12, '#ffcc00', SCALE);
+      if (this._entityConfigs.length === 0) {
+        this._drawString(ctx, 'Station hinzu-', 4, 2, '#888888', SCALE);
+        this._drawString(ctx, 'fuegen...', 4, 12, '#888888', SCALE);
+      } else {
+        this._drawString(ctx, 'Keine Abfahrten', 4, 12, '#ffcc00', SCALE);
+      }
       return;
     }
 
@@ -404,12 +412,33 @@ class BvgDisplayCard extends HTMLElement {
     return Math.max(2, Math.ceil(this._rows * 1.2));
   }
 
+  getGridOptions() {
+    return {
+      rows: Math.max(2, this._rows),
+      columns: 12,
+      min_rows: 2,
+      min_columns: 6,
+    };
+  }
+
   static getConfigElement() {
     return document.createElement('bvg-display-card-editor');
   }
 
-  static getStubConfig() {
-    return { entities: [], rows: 3, scroll_speed: 3000, scroll_enabled: true, show_platform: true, show_header: false, frame_style: 'panel' };
+  static getStubConfig(hass) {
+    // Try to find a BVG departure sensor for a useful default
+    const entities = Object.keys(hass ? hass.states : {}).filter(
+      e => e.startsWith('sensor.bvg_') && e.endsWith('_departures')
+    );
+    return {
+      entities: entities.length > 0 ? [{ entity: entities[0], walk_time: 0 }] : [],
+      rows: 3,
+      scroll_speed: 3000,
+      scroll_enabled: true,
+      show_platform: true,
+      show_header: false,
+      frame_style: 'panel',
+    };
   }
 }
 
