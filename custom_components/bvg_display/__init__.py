@@ -23,6 +23,27 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
 
+CARD_URL = "/bvg-display/bvg-display-card.js"
+CARD_PATH = Path(__file__).parent / "www" / "bvg-display-card.js"
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the BVG Display integration (register frontend card)."""
+    hass.data.setdefault(DOMAIN, {})
+
+    # Register the Lovelace card static path immediately so the frontend
+    # can always find it, regardless of config entry load state.
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            CARD_URL,
+            str(CARD_PATH),
+            cache_headers=False,
+        )
+    ])
+    add_extra_js_url(hass, CARD_URL)
+
+    return True
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BVG Display from a config entry."""
@@ -54,19 +75,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Register the custom Lovelace card (only once across multiple entries)
-    card_url = "/bvg-display/bvg-display-card.js"
-    if DOMAIN not in hass.data.get("frontend_extra_js_registered", set()):
-        await hass.http.async_register_static_paths([
-            StaticPathConfig(
-                card_url,
-                str(Path(__file__).parent / "www" / "bvg-display-card.js"),
-                cache_headers=False,
-            )
-        ])
-        add_extra_js_url(hass, card_url)
-        hass.data.setdefault("frontend_extra_js_registered", set()).add(DOMAIN)
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 

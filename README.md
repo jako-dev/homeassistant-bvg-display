@@ -9,13 +9,17 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 ## Features
 
 - **Real-time departures** from any BVG/VBB station
+- **Multi-station support** — combine multiple stations in one card
+- **Per-station walk time** — hide departures you can't reach in time
 - **Custom Lovelace card** with authentic LED matrix panel look
 - **UI config flow** — add stations via Settings > Integrations
+- **Visual card editor** — configure everything from the dashboard UI
 - **Transport filters** — show/hide S-Bahn, U-Bahn, Tram, Bus, Ferry, IC/ICE, Regional
 - **Configurable departure count** (1, 3, 6, 9, 12, 15)
-- **Auto-scrolling** through departures
+- **Auto-scrolling** through departures (pauses when card is not visible)
 - **Color-coded lines** by transport type
 - **Delay indicators** — green (on time), orange (delayed), red (cancelled)
+- **Unavailable sensor detection** — shows error state on the LED display
 - **Options flow** — reconfigure filters and count without removing the integration
 
 ## Installation
@@ -77,7 +81,7 @@ departures:
 
 ### Register the card resource
 
-After installing the integration, add the card resource:
+The card resource is registered automatically when the integration is loaded. If you need to add it manually:
 
 **Settings → Dashboards → Resources → Add Resource:**
 
@@ -86,22 +90,64 @@ URL: /bvg-display/bvg-display-card.js
 Type: JavaScript Module
 ```
 
-### Add the card to a dashboard
+### Basic card configuration
 
 ```yaml
 type: custom:bvg-display-card
-entity: sensor.bvg_s_u_alexanderplatz_departures
+entities:
+  - sensor.bvg_alexanderplatz_departures
 rows: 3
 scroll_speed: 3000
+scroll_enabled: true
 ```
+
+### Multi-station with walk time
+
+```yaml
+type: custom:bvg-display-card
+entities:
+  - entity: sensor.bvg_bersarinplatz_berlin_departures
+    walk_time: 5
+  - entity: sensor.bvg_u_weberwiese_berlin_departures
+    walk_time: 9
+  - entity: sensor.bvg_am_friedrichshain_berlin_departures
+    walk_time: 18
+rows: 6
+scroll_speed: 3000
+scroll_enabled: false
+show_platform: false
+show_header: false
+frame_style: flat
+```
+
+Departures from all stations are merged and sorted by time. Each station's `walk_time` (in minutes) filters out departures you can no longer reach on foot.
 
 ### Card Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `entity` | (required) | The `*_departures` sensor entity ID |
-| `rows` | `4` | Number of departure rows to display (1–4) |
+| `entities` | (required) | List of `*_departures` sensor entities (string or `{entity, walk_time}` object) |
+| `entity` | — | Single entity (legacy, use `entities` instead) |
+| `rows` | `3` | Number of departure rows to display (1–6) |
+| `scroll_enabled` | `true` | Enable/disable auto-scrolling through departures |
 | `scroll_speed` | `3000` | Auto-scroll interval in milliseconds |
+| `show_platform` | `true` | Show platform/track number |
+| `show_header` | `false` | Display station name(s) above the panel |
+| `frame_style` | `panel` | Panel border style: `panel` (3D frame) or `flat` (minimal) |
+
+### Entity format
+
+Entities can be specified as plain strings (no walk time filtering) or objects:
+
+```yaml
+entities:
+  # Simple (no walk time filtering)
+  - sensor.bvg_alexanderplatz_departures
+
+  # With walk time
+  - entity: sensor.bvg_alexanderplatz_departures
+    walk_time: 5
+```
 
 ## Options / Reconfiguration
 
@@ -118,14 +164,17 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 - No API key required
 - Rate limit: 100 requests/minute
 - Polling interval: 30 seconds (respects HA update coordinator)
+- Uses Home Assistant's shared HTTP session (no connection leaks)
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| No departures shown | BVG API may be temporarily down (503). Check sensor state. |
-| Card not rendering | Make sure you added the resource URL in dashboard settings |
+| "Config entry already been setup" | Fixed in v1.5 — update to latest version. Entry reload races are now guarded. |
+| No departures shown | BVG API may be temporarily down. Entry will auto-retry (ConfigEntryNotReady). |
+| Card not rendering | Make sure the resource is registered (usually automatic). Check browser console. |
 | Entity unavailable | Check HA logs for API errors; verify internet connectivity |
+| Card shows "Sensor nicht verfuegbar" | The configured entity doesn't exist or is in `unavailable` state |
 | Stale data | The coordinator polls every 30s. Check `last_updated` on the entity |
 
 ## License
