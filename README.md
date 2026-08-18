@@ -81,7 +81,9 @@ departures:
 
 `departure_time` is the absolute departure instant — the card counts down from
 it locally, so the display stays accurate between the 30 s polls. `minutes` is
-a snapshot taken at the last update, kept for templates and automations.
+recomputed on every update (i.e. accurate to within the 30 s polling interval)
+and is the convenient value for templates and automations; for anything that
+needs to be exact, derive it from `departure_time`.
 
 ## Lovelace Card
 

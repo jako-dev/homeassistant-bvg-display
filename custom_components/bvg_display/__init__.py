@@ -1,6 +1,5 @@
 """BVG Departure Display integration."""
 
-import logging
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -14,10 +13,9 @@ from .const import (
     CONF_STATION_ID,
     CONF_STATION_NAME,
     DEFAULT_DEPARTURE_COUNT,
+    DOMAIN,
 )
 from .coordinator import BvgDepartureCoordinator
-
-_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor"]
 
@@ -27,6 +25,13 @@ CARD_PATH = Path(__file__).parent / "www" / "bvg-display-card.js"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the BVG Display integration (register frontend card)."""
+    # Registering the same static route twice raises inside aiohttp and would
+    # fail the whole domain, so make this idempotent even if component setup
+    # is ever retried.
+    if hass.data.get(DOMAIN):
+        return True
+    hass.data[DOMAIN] = True
+
     # Register the Lovelace card static path immediately so the frontend
     # can always find it, regardless of config entry load state.
     await hass.http.async_register_static_paths([
@@ -41,20 +46,37 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _coordinator_options(entry: ConfigEntry) -> dict:
+    """Options the coordinator consumes.
+
+    Defined once so initial setup and the in-place options update can't drift
+    apart when a new option is added.
+    """
+    return {
+        "departure_count": entry.options.get(
+            CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT
+        ),
+        "filters": entry.options.get(CONF_FILTERS, {}),
+    }
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BVG Display from a config entry."""
-    departure_count = entry.options.get(CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT)
-    filters = entry.options.get(CONF_FILTERS, {})
-
     coordinator = BvgDepartureCoordinator(
         hass,
+        entry,
         station_id=entry.data[CONF_STATION_ID],
         station_name=entry.data[CONF_STATION_NAME],
-        departure_count=departure_count,
-        filters=filters,
+        **_coordinator_options(entry),
     )
 
-    await coordinator.async_config_entry_first_refresh()
+    # Deliberately async_refresh() and not async_config_entry_first_refresh():
+    # the latter raises ConfigEntryNotReady when the community-run BVG API is
+    # slow or down, which fails the whole entry, removes both sensors and puts
+    # the entry into a backoff retry (10s, 20s, 40s, 80s...). Bringing the
+    # entities up anyway means a failed first poll self-heals on the next
+    # 30s cycle instead.
+    await coordinator.async_refresh()
 
     entry.runtime_data = coordinator
 
@@ -78,10 +100,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
         await hass.config_entries.async_reload(entry.entry_id)
         return
 
-    coordinator.update_options(
-        departure_count=entry.options.get(CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT),
-        filters=entry.options.get(CONF_FILTERS, {}),
-    )
+    coordinator.update_options(**_coordinator_options(entry))
     await coordinator.async_request_refresh()
 
 

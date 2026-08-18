@@ -68,6 +68,9 @@ class BvgDisplayCard extends HTMLElement {
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
     this._scrollIndex = 0;
+    // Drop the cached snapshot: it belongs to the previous entity set and
+    // must not be resurrected under a newly configured station.
+    this._lastGood = null;
 
     // Re-render if already connected (config change via editor)
     if (this._rendered) {
@@ -78,6 +81,10 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   connectedCallback() {
+    // Reset visibility: it may still be false from a previous disconnect, and
+    // both timers refuse to start while it is, which would leave the card
+    // frozen when IntersectionObserver is unavailable.
+    this._visible = true;
     this._render();
     this._rendered = true;
     this._updateCard();
@@ -112,7 +119,8 @@ class BvgDisplayCard extends HTMLElement {
     this._unobserveVisibility();
     this._observer = new IntersectionObserver((entries) => {
       const wasVisible = this._visible;
-      this._visible = entries[0].isIntersecting;
+      // Callbacks can be coalesced; the last entry is the current state.
+      this._visible = entries[entries.length - 1].isIntersecting;
       if (this._visible && !wasVisible) {
         this._restartScroll();
         this._startTick();
@@ -247,14 +255,13 @@ class BvgDisplayCard extends HTMLElement {
       const deps = Array.isArray(attrs.departures) ? attrs.departures : [];
       const name = attrs.station_name || '';
       if (name && !stationNames.includes(name)) stationNames.push(name);
-      // Recompute minutes locally so the countdown stays live between updates
-      const withMinutes = deps.map(d => ({ ...d, minutes: this._minutesFor(d) }));
-      // Filter by per-station walk time
+      // Recompute minutes locally so the countdown stays live between updates.
+      // _walk is carried along so the filter can be re-applied to cached rows.
       const walkTime = ec.walk_time || 0;
-      const filtered = walkTime > 0
-        ? withMinutes.filter(d => typeof d.minutes === 'number' && d.minutes >= walkTime)
-        : withMinutes;
-      allDepartures = allDepartures.concat(filtered);
+      const withMinutes = deps.map(
+        d => ({ ...d, minutes: this._minutesFor(d), _walk: walkTime })
+      );
+      allDepartures = allDepartures.concat(withMinutes.filter(d => this._isReachable(d)));
     }
 
     // Sort by minutes (soonest first)
@@ -266,16 +273,18 @@ class BvgDisplayCard extends HTMLElement {
 
     // Remember the last usable render so a restart/reload (entities briefly
     // missing) doesn't immediately flash "Sensor nicht verfuegbar".
-    if (allDepartures.length > 0) {
+    // Only bridge when *every* configured station is down. If one station is
+    // live and simply has nothing to show, its own state is the truth and
+    // cached rows must not contradict it.
+    const allDown = unavailable.length === this._entityConfigs.length;
+
+    if (!allDown) {
       this._lastGood = { departures: allDepartures, stationNames, at: Date.now() };
-    } else if (
-      unavailable.length > 0 &&
-      this._lastGood &&
-      Date.now() - this._lastGood.at < STALE_GRACE_MS
-    ) {
+    } else if (this._lastGood && Date.now() - this._lastGood.at < STALE_GRACE_MS) {
       allDepartures = this._lastGood.departures
         .filter(d => !this._hasDeparted(d))
-        .map(d => ({ ...d, minutes: this._minutesFor(d) }));
+        .map(d => ({ ...d, minutes: this._minutesFor(d) }))
+        .filter(d => this._isReachable(d));
       stationNames = this._lastGood.stationNames;
       unavailable = [];
     }
@@ -297,6 +306,13 @@ class BvgDisplayCard extends HTMLElement {
       }
     }
     return dep && typeof dep.minutes === 'number' ? dep.minutes : null;
+  }
+
+  // Per-station walk time: hide departures that can no longer be reached.
+  _isReachable(dep) {
+    const walk = (dep && dep._walk) || 0;
+    if (walk <= 0) return true;
+    return typeof dep.minutes === 'number' && dep.minutes >= walk;
   }
 
   // True once a cached departure's absolute time has passed, so stale data

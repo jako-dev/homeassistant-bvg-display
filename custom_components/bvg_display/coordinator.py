@@ -6,6 +6,7 @@ import logging
 import aiohttp
 import asyncio
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -32,6 +33,7 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: ConfigEntry,
         station_id: str,
         station_name: str,
         departure_count: int = DEFAULT_DEPARTURE_COUNT,
@@ -45,12 +47,15 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
         self.filters = filters or {}
         self._consecutive_failures = 0
 
+        # config_entry is passed explicitly: the implicit ContextVar fallback
+        # is deprecated (removed in HA 2026.8) and silently skips wiring
+        # async_shutdown to the entry, which leaks the polling timer.
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN}_{station_id}",
             update_interval=timedelta(seconds=scan_interval),
-            always_update=False,
         )
 
     def update_options(self, departure_count: int, filters: dict | None) -> None:
@@ -69,7 +74,10 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             departures = await self._fetch_departures()
         except UpdateFailed as err:
             self._consecutive_failures += 1
-            if self.data and self._consecutive_failures <= MAX_CONSECUTIVE_FAILURES:
+            # "is not None", not truthiness: an empty list is a valid cached
+            # result (night service, or every product filtered out) and must
+            # still count as having data to fall back on.
+            if self.data is not None and self._consecutive_failures <= MAX_CONSECUTIVE_FAILURES:
                 _LOGGER.warning(
                     "BVG update failed for %s (%s/%s), serving cached departures: %s",
                     self.station_name,
