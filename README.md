@@ -202,6 +202,27 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 | Card shows "Sensor nicht verfuegbar" | The configured entity doesn't exist or is in `unavailable` state |
 | Stale data | The coordinator polls every 30s. Check `last_updated` on the entity |
 
+## Brand icon
+
+The integration ships its own icon in `custom_components/bvg_display/brand/`
+(`icon.png` 256×256 and `icon@2x.png` 512×512). Home Assistant **2026.3+** serves brand
+images from that directory, checking it before the brands CDN, so the icon shows up on
+Settings → Devices & Services and in the HACS list with no separate submission. On older
+cores the directory is simply ignored.
+
+The artwork is the departure board itself, drawn with the same 5×7 pixel font as the
+Lovelace card. Regenerate it after changing the font with:
+
+```bash
+pip install Pillow
+python3 scripts/generate_icon.py
+```
+
+> The HACS **browse** list, for repositories you have not downloaded yet, has no local
+> directory to read and still falls back to the CDN. Only a pull request to
+> [home-assistant/brands](https://github.com/home-assistant/brands) (under
+> `custom_integrations/bvg_display/`) changes that listing.
+
 ## License
 
 MIT
