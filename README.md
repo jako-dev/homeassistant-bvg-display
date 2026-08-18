@@ -13,7 +13,8 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 - **Per-station walk time** — hide departures you can't reach in time
 - **Custom Lovelace card** with authentic LED matrix panel look
 - **UI config flow** — add stations via Settings > Integrations
-- **Visual card editor** — configure everything from the dashboard UI
+- **Visual card editor** — configure everything from the dashboard UI, with an
+  autocomplete station picker that only lists your BVG departure sensors
 - **Transport filters** — show/hide S-Bahn, U-Bahn, Tram, Bus, Ferry, IC/ICE, Regional
 - **Configurable departure count** (1, 3, 6, 9, 12, 15)
 - **Auto-scrolling** through departures (pauses when card is not visible)
@@ -154,7 +155,12 @@ Departures from all stations are merged and sorted by time. Each station's `walk
 
 ### Entity format
 
-Entities can be specified as plain strings (no walk time filtering) or objects:
+In the visual editor you do not need to type entity ids — the station field is an
+autocomplete picker filtered to sensors that actually expose departures, so only your
+BVG stations are offered. The detection is based on the sensor's attributes, not its
+name, so renamed entities still show up.
+
+In YAML, entities can be specified as plain strings (no walk time filtering) or objects:
 
 ```yaml
 entities:

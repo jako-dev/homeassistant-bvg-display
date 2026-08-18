@@ -3,6 +3,14 @@
  * Renders BVG departures as a pixel-art LED panel
  */
 
+// Identifies a BVG departures sensor by what it exposes rather than by its
+// entity id, so renamed entities and non-default ids are still found.
+const isDeparturesSensor = (stateObj) =>
+  !!stateObj &&
+  !!stateObj.attributes &&
+  Array.isArray(stateObj.attributes.departures) &&
+  typeof stateObj.attributes.station_name === 'string';
+
 // How often the card recomputes the countdown locally.
 const TICK_INTERVAL_MS = 15000;
 // How long the last good departures stay on screen while entities are
@@ -528,10 +536,10 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig(hass) {
-    // Try to find a BVG departure sensor for a useful default
-    const entities = Object.keys((hass && hass.states) || {}).filter(
-      e => e.startsWith('sensor.bvg_') && e.endsWith('_departures')
-    );
+    // Find a BVG departure sensor by its attributes, not its name: entity ids
+    // are user-renameable and the bvg_ prefix is not guaranteed.
+    const states = (hass && hass.states) || {};
+    const entities = Object.keys(states).filter(e => isDeparturesSensor(states[e]));
     return {
       entities: entities.length > 0 ? [{ entity: entities[0], walk_time: 0 }] : [],
       rows: 3,
@@ -655,6 +663,35 @@ class BvgDisplayCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = { ...config };
     this._render();
+    // ha-entity-picker ships with the frontend but is only registered once a
+    // built-in editor has pulled it in. Render immediately with the plain text
+    // fallback, then swap in the autocomplete picker as soon as it exists.
+    if (!customElements.get('ha-entity-picker')) {
+      BvgDisplayCardEditor._loadEntityPicker().then((ok) => {
+        if (ok) this._render();
+      });
+    }
+  }
+
+  static _loadEntityPicker() {
+    if (BvgDisplayCardEditor._pickerPromise) {
+      return BvgDisplayCardEditor._pickerPromise;
+    }
+    BvgDisplayCardEditor._pickerPromise = (async () => {
+      if (customElements.get('ha-entity-picker')) return true;
+      try {
+        // Loading the built-in entities card editor registers ha-entity-picker.
+        const helpers = await window.loadCardHelpers();
+        const card = await helpers.createCardElement({ type: 'entities', entities: [] });
+        if (card && card.constructor && card.constructor.getConfigElement) {
+          await card.constructor.getConfigElement();
+        }
+      } catch (err) {
+        return false;
+      }
+      return !!customElements.get('ha-entity-picker');
+    })();
+    return BvgDisplayCardEditor._pickerPromise;
   }
 
   _render() {
@@ -681,9 +718,12 @@ class BvgDisplayCardEditor extends HTMLElement {
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
 
+    const usePicker = !!customElements.get('ha-entity-picker');
     const entityListHtml = entities.map((e, idx) => `
       <div class="entity-row">
-        <input type="text" class="entity-input" data-idx="${idx}" placeholder="sensor.bvg_..._departures">
+        ${usePicker
+          ? `<ha-entity-picker class="entity-input" data-idx="${idx}" allow-custom-entity></ha-entity-picker>`
+          : `<input type="text" class="entity-input" data-idx="${idx}" placeholder="sensor.bvg_..._departures">`}
         <input type="number" class="walk-input" data-idx="${idx}" value="${e.walk_time}" min="0" max="30" placeholder="0" title="Walk time (min)">
         <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       </div>
@@ -856,14 +896,32 @@ class BvgDisplayCardEditor extends HTMLElement {
     `;
 
     // Entity list events
+    const setEntityAt = (i, value) => {
+      const newEntities = [...entities];
+      newEntities[i] = { ...newEntities[i], entity: value || '' };
+      this._updateEntities(newEntities);
+    };
+
     this.shadowRoot.querySelectorAll('.entity-input').forEach((input, idx) => {
-      input.value = entities[idx].entity;
-      input.addEventListener('change', (e) => {
-        const i = parseInt(e.target.dataset.idx);
-        const newEntities = [...entities];
-        newEntities[i] = { ...newEntities[i], entity: e.target.value };
-        this._updateEntities(newEntities);
-      });
+      if (usePicker) {
+        // Properties, not attributes: ha-entity-picker reads these off the
+        // element, and this also keeps entity ids out of the HTML string.
+        input.hass = this._hass;
+        input.value = entities[idx].entity;
+        input.includeDomains = ['sensor'];
+        // Offer only actual BVG departure sensors rather than every sensor.
+        input.entityFilter = isDeparturesSensor;
+        input.allowCustomEntity = true;
+        input.addEventListener('value-changed', (e) => {
+          e.stopPropagation();
+          setEntityAt(parseInt(input.dataset.idx, 10), e.detail && e.detail.value);
+        });
+      } else {
+        input.value = entities[idx].entity;
+        input.addEventListener('change', (e) => {
+          setEntityAt(parseInt(e.target.dataset.idx, 10), e.target.value);
+        });
+      }
     });
     this.shadowRoot.querySelectorAll('.walk-input').forEach(input => {
       input.addEventListener('change', (e) => {
@@ -928,7 +986,12 @@ class BvgDisplayCardEditor extends HTMLElement {
   }
 
   _updateEntityPicker() {
-    // Handled via entity list in _render
+    // hass usually arrives after the first render, and the pickers need it to
+    // resolve entity names and populate their dropdown.
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('ha-entity-picker').forEach((picker) => {
+      picker.hass = this._hass;
+    });
   }
 }
 
