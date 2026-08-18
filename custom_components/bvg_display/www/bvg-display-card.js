@@ -3,6 +3,12 @@
  * Renders BVG departures as a pixel-art LED panel
  */
 
+// How often the card recomputes the countdown locally.
+const TICK_INTERVAL_MS = 15000;
+// How long the last good departures stay on screen while entities are
+// unavailable (HA restart, integration reload, brief API outage).
+const STALE_GRACE_MS = 120000;
+
 class BvgDisplayCard extends HTMLElement {
   static get properties() {
     return {
@@ -22,6 +28,8 @@ class BvgDisplayCard extends HTMLElement {
     this._rendered = false;
     this._observer = null;
     this._visible = true;
+    this._tickTimer = null;
+    this._lastGood = null;
   }
 
   set hass(hass) {
@@ -74,12 +82,29 @@ class BvgDisplayCard extends HTMLElement {
     this._rendered = true;
     this._updateCard();
     this._restartScroll();
+    this._startTick();
     this._observeVisibility();
   }
 
   disconnectedCallback() {
     this._stopScroll();
+    this._stopTick();
     this._unobserveVisibility();
+  }
+
+  // Countdown ticker: keeps "in N min" advancing between coordinator updates,
+  // and also when scrolling is disabled (no other timer runs in that mode).
+  _startTick() {
+    this._stopTick();
+    if (!this._visible) return;
+    this._tickTimer = setInterval(() => this._updateCard(), TICK_INTERVAL_MS);
+  }
+
+  _stopTick() {
+    if (this._tickTimer) {
+      clearInterval(this._tickTimer);
+      this._tickTimer = null;
+    }
   }
 
   _observeVisibility() {
@@ -90,8 +115,11 @@ class BvgDisplayCard extends HTMLElement {
       this._visible = entries[0].isIntersecting;
       if (this._visible && !wasVisible) {
         this._restartScroll();
+        this._startTick();
+        this._updateCard();
       } else if (!this._visible && wasVisible) {
         this._stopScroll();
+        this._stopTick();
       }
     }, { threshold: 0.1 });
     this._observer.observe(this);
@@ -219,11 +247,13 @@ class BvgDisplayCard extends HTMLElement {
       const deps = Array.isArray(attrs.departures) ? attrs.departures : [];
       const name = attrs.station_name || '';
       if (name && !stationNames.includes(name)) stationNames.push(name);
+      // Recompute minutes locally so the countdown stays live between updates
+      const withMinutes = deps.map(d => ({ ...d, minutes: this._minutesFor(d) }));
       // Filter by per-station walk time
       const walkTime = ec.walk_time || 0;
       const filtered = walkTime > 0
-        ? deps.filter(d => typeof d.minutes === 'number' && d.minutes >= walkTime)
-        : deps;
+        ? withMinutes.filter(d => typeof d.minutes === 'number' && d.minutes >= walkTime)
+        : withMinutes;
       allDepartures = allDepartures.concat(filtered);
     }
 
@@ -234,11 +264,47 @@ class BvgDisplayCard extends HTMLElement {
       return aMin - bMin;
     });
 
+    // Remember the last usable render so a restart/reload (entities briefly
+    // missing) doesn't immediately flash "Sensor nicht verfuegbar".
+    if (allDepartures.length > 0) {
+      this._lastGood = { departures: allDepartures, stationNames, at: Date.now() };
+    } else if (
+      unavailable.length > 0 &&
+      this._lastGood &&
+      Date.now() - this._lastGood.at < STALE_GRACE_MS
+    ) {
+      allDepartures = this._lastGood.departures
+        .filter(d => !this._hasDeparted(d))
+        .map(d => ({ ...d, minutes: this._minutesFor(d) }));
+      stationNames = this._lastGood.stationNames;
+      unavailable = [];
+    }
+
     if (this._headerEl) {
       this._headerEl.textContent = stationNames.join(' / ');
     }
 
     this._renderLed(allDepartures, unavailable);
+  }
+
+  // Prefer the absolute departure time so the countdown ticks down locally;
+  // fall back to the server-computed snapshot for older backends.
+  _minutesFor(dep) {
+    if (dep && dep.departure_time) {
+      const ts = Date.parse(dep.departure_time);
+      if (!isNaN(ts)) {
+        return Math.max(0, Math.round((ts - Date.now()) / 60000));
+      }
+    }
+    return dep && typeof dep.minutes === 'number' ? dep.minutes : null;
+  }
+
+  // True once a cached departure's absolute time has passed, so stale data
+  // drops rows instead of pinning them at "jetzt" forever.
+  _hasDeparted(dep) {
+    if (!dep || !dep.departure_time) return false;
+    const ts = Date.parse(dep.departure_time);
+    return !isNaN(ts) && ts < Date.now();
   }
 
   _renderLed(departures, unavailable) {

@@ -66,8 +66,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Handle options update.
+
+    Applied in place rather than via async_reload: a reload tears down the
+    entities and re-runs the blocking first refresh, so a slow or failing BVG
+    API at that moment leaves the entry in an error state with the card
+    showing "Sensor nicht verfuegbar".
+    """
+    coordinator: BvgDepartureCoordinator | None = getattr(entry, "runtime_data", None)
+    if coordinator is None:
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    coordinator.update_options(
+        departure_count=entry.options.get(CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT),
+        filters=entry.options.get(CONF_FILTERS, {}),
+    )
+    await coordinator.async_request_refresh()
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

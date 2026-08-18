@@ -44,10 +44,15 @@ def _minutes_until(dep_time: datetime | None) -> int | None:
 
 
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
-    """Build the shared device info for a station's sensors."""
+    """Build the shared device info for a station's sensors.
+
+    The device name keeps the "BVG " prefix so that has_entity_name composes
+    back to the historic entity ids (sensor.bvg_<station>_departures) that the
+    docs, the card's getStubConfig autodetect and existing dashboards rely on.
+    """
     return DeviceInfo(
         identifiers={(DOMAIN, entry.data[CONF_STATION_ID])},
-        name=entry.data[CONF_STATION_NAME],
+        name=f"BVG {entry.data[CONF_STATION_NAME]}",
         manufacturer="BVG/VBB (transport.rest)",
         model="Departure Board",
     )
@@ -71,8 +76,10 @@ async def async_setup_entry(
 class BvgNextDepartureSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing the next departure time."""
 
+    # "Next" (not "Next departure") so has_entity_name composes back to the
+    # documented sensor.bvg_<station>_next entity id.
     _attr_has_entity_name = True
-    _attr_name = "Next departure"
+    _attr_name = "Next"
     _attr_icon = "mdi:bus-clock"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
@@ -147,6 +154,9 @@ class BvgDeparturesSensor(CoordinatorEntity, SensorEntity):
                 "delay": dep["delay"] or 0,
                 "platform": dep["platform"],
                 "cancelled": dep["cancelled"],
+                # Absolute time lets the card tick the countdown down between
+                # polls; "minutes" is a snapshot kept for templates/automations.
+                "departure_time": when,
                 "minutes": _minutes_until(_parse_departure_time(when)),
             })
 

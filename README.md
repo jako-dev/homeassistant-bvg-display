@@ -64,18 +64,24 @@ departures:
   - line: "U2"
     direction: "Pankow"
     product: "subway"
-    delay: 0
+    delay: 0                              # seconds
     platform: "1"
     cancelled: false
+    departure_time: "2026-08-18T10:05:00+02:00"
     minutes: 2
   - line: "S7"
     direction: "Ahrensfelde"
     product: "suburban"
-    delay: 60
+    delay: 60                             # seconds (1 min late)
     platform: "3"
     cancelled: false
+    departure_time: "2026-08-18T10:08:00+02:00"
     minutes: 5
 ```
+
+`departure_time` is the absolute departure instant — the card counts down from
+it locally, so the display stays accurate between the 30 s polls. `minutes` is
+a snapshot taken at the last update, kept for templates and automations.
 
 ## Lovelace Card
 
@@ -170,8 +176,10 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 
 | Problem | Solution |
 |---------|----------|
-| "Config entry already been setup" | Fixed in v1.5 — update to latest version. Entry reload races are now guarded. |
-| No departures shown | BVG API may be temporarily down. Entry will auto-retry (ConfigEntryNotReady). |
+| "Config entry already been setup" | Fixed — the entry no longer keeps state in `hass.data`, so reloads can't collide. |
+| Error / "Sensor nicht verfuegbar" after changing options | Fixed — option changes are applied in place instead of reloading the entry, so entities are never torn down. |
+| Brief "Sensor nicht verfuegbar" on HA restart | Expected while the integration loads. The card keeps showing the last departures for up to 2 minutes to bridge the gap. |
+| No departures shown | BVG API may be temporarily down. Short outages (up to 3 failed polls) are bridged with cached data; longer ones mark the entities unavailable and auto-retry. |
 | Card not rendering | Make sure the resource is registered (usually automatic). Check browser console. |
 | Entity unavailable | Check HA logs for API errors; verify internet connectivity |
 | Card shows "Sensor nicht verfuegbar" | The configured entity doesn't exist or is in `unavailable` state |
