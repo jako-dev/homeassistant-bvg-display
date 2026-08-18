@@ -3,6 +3,20 @@
  * Renders BVG departures as a pixel-art LED panel
  */
 
+// Identifies a BVG departures sensor by what it exposes rather than by its
+// entity id, so renamed entities and non-default ids are still found.
+const isDeparturesSensor = (stateObj) =>
+  !!stateObj &&
+  !!stateObj.attributes &&
+  Array.isArray(stateObj.attributes.departures) &&
+  typeof stateObj.attributes.station_name === 'string';
+
+// How often the card recomputes the countdown locally.
+const TICK_INTERVAL_MS = 15000;
+// How long the last good departures stay on screen while entities are
+// unavailable (HA restart, integration reload, brief API outage).
+const STALE_GRACE_MS = 120000;
+
 class BvgDisplayCard extends HTMLElement {
   static get properties() {
     return {
@@ -22,6 +36,25 @@ class BvgDisplayCard extends HTMLElement {
     this._rendered = false;
     this._observer = null;
     this._visible = true;
+    this._tickTimer = null;
+    this._lastGood = null;
+    // Defaults mirror setConfig: HA may call getCardSize()/getGridOptions()
+    // or connectedCallback before setConfig, and undefined here would make
+    // those return NaN and corrupt the dashboard layout.
+    this._rows = 3;
+    this._scrollSpeed = 3000;
+    this._scrollEnabled = true;
+    this._showPlatform = true;
+    this._showHeader = false;
+    this._frameStyle = 'panel';
+  }
+
+  // Accepts a list, a single entry, or nothing. A bare string must not be
+  // spread into one entity per character, and a mapping must not throw.
+  static _asEntityList(value) {
+    if (Array.isArray(value)) return value;
+    if (value === undefined || value === null || value === '') return [];
+    return [value];
   }
 
   set hass(hass) {
@@ -39,24 +72,30 @@ class BvgDisplayCard extends HTMLElement {
     this._config = { ...config };
 
     // Normalize entities: support string[] or {entity, walk_time}[]
-    const rawEntities = config.entities || (config.entity ? [config.entity] : []);
+    const rawEntities = BvgDisplayCard._asEntityList(config.entities ?? config.entity);
     this._entityConfigs = [];
     for (const e of rawEntities) {
       if (typeof e === 'string') {
         if (e) this._entityConfigs.push({ entity: e, walk_time: 0 });
       } else if (e && typeof e === 'object' && e.entity) {
-        this._entityConfigs.push({ entity: e.entity, walk_time: parseInt(e.walk_time, 10) || 0 });
+        this._entityConfigs.push({
+          entity: e.entity,
+          walk_time: Math.min(30, Math.max(0, parseInt(e.walk_time, 10) || 0)),
+        });
       }
       // Skip invalid/empty entries silently (editor intermediate states)
     }
 
-    this._rows = parseInt(config.rows, 10) || 3;
-    this._scrollSpeed = parseInt(config.scroll_speed, 10) || 3000;
+    this._rows = Math.min(6, Math.max(1, parseInt(config.rows, 10) || 3));
+    this._scrollSpeed = Math.max(250, parseInt(config.scroll_speed, 10) || 3000);
     this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
     this._scrollIndex = 0;
+    // Drop the cached snapshot: it belongs to the previous entity set and
+    // must not be resurrected under a newly configured station.
+    this._lastGood = null;
 
     // Re-render if already connected (config change via editor)
     if (this._rendered) {
@@ -67,16 +106,37 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   connectedCallback() {
+    // Reset visibility: it may still be false from a previous disconnect, and
+    // both timers refuse to start while it is, which would leave the card
+    // frozen when IntersectionObserver is unavailable.
+    this._visible = true;
     this._render();
     this._rendered = true;
     this._updateCard();
     this._restartScroll();
+    this._startTick();
     this._observeVisibility();
   }
 
   disconnectedCallback() {
     this._stopScroll();
+    this._stopTick();
     this._unobserveVisibility();
+  }
+
+  // Countdown ticker: keeps "in N min" advancing between coordinator updates,
+  // and also when scrolling is disabled (no other timer runs in that mode).
+  _startTick() {
+    this._stopTick();
+    if (!this._visible) return;
+    this._tickTimer = setInterval(() => this._updateCard(), TICK_INTERVAL_MS);
+  }
+
+  _stopTick() {
+    if (this._tickTimer) {
+      clearInterval(this._tickTimer);
+      this._tickTimer = null;
+    }
   }
 
   _observeVisibility() {
@@ -84,11 +144,15 @@ class BvgDisplayCard extends HTMLElement {
     this._unobserveVisibility();
     this._observer = new IntersectionObserver((entries) => {
       const wasVisible = this._visible;
-      this._visible = entries[0].isIntersecting;
+      // Callbacks can be coalesced; the last entry is the current state.
+      this._visible = entries[entries.length - 1].isIntersecting;
       if (this._visible && !wasVisible) {
         this._restartScroll();
+        this._startTick();
+        this._updateCard();
       } else if (!this._visible && wasVisible) {
         this._stopScroll();
+        this._stopTick();
       }
     }, { threshold: 0.1 });
     this._observer.observe(this);
@@ -216,12 +280,13 @@ class BvgDisplayCard extends HTMLElement {
       const deps = Array.isArray(attrs.departures) ? attrs.departures : [];
       const name = attrs.station_name || '';
       if (name && !stationNames.includes(name)) stationNames.push(name);
-      // Filter by per-station walk time
+      // Recompute minutes locally so the countdown stays live between updates.
+      // _walk is carried along so the filter can be re-applied to cached rows.
       const walkTime = ec.walk_time || 0;
-      const filtered = walkTime > 0
-        ? deps.filter(d => typeof d.minutes === 'number' && d.minutes >= walkTime)
-        : deps;
-      allDepartures = allDepartures.concat(filtered);
+      const withMinutes = deps.map(
+        d => ({ ...d, minutes: this._minutesFor(d), _walk: walkTime })
+      );
+      allDepartures = allDepartures.concat(withMinutes.filter(d => this._isReachable(d)));
     }
 
     // Sort by minutes (soonest first)
@@ -231,11 +296,56 @@ class BvgDisplayCard extends HTMLElement {
       return aMin - bMin;
     });
 
+    // Remember the last usable render so a restart/reload (entities briefly
+    // missing) doesn't immediately flash "Sensor nicht verfuegbar".
+    // Only bridge when *every* configured station is down. If one station is
+    // live and simply has nothing to show, its own state is the truth and
+    // cached rows must not contradict it.
+    const allDown = unavailable.length === this._entityConfigs.length;
+
+    if (!allDown) {
+      this._lastGood = { departures: allDepartures, stationNames, at: Date.now() };
+    } else if (this._lastGood && Date.now() - this._lastGood.at < STALE_GRACE_MS) {
+      allDepartures = this._lastGood.departures
+        .filter(d => !this._hasDeparted(d))
+        .map(d => ({ ...d, minutes: this._minutesFor(d) }))
+        .filter(d => this._isReachable(d));
+      stationNames = this._lastGood.stationNames;
+      unavailable = [];
+    }
+
     if (this._headerEl) {
       this._headerEl.textContent = stationNames.join(' / ');
     }
 
     this._renderLed(allDepartures, unavailable);
+  }
+
+  // Prefer the absolute departure time so the countdown ticks down locally;
+  // fall back to the server-computed snapshot for older backends.
+  _minutesFor(dep) {
+    if (dep && dep.departure_time) {
+      const ts = Date.parse(dep.departure_time);
+      if (!isNaN(ts)) {
+        return Math.max(0, Math.round((ts - Date.now()) / 60000));
+      }
+    }
+    return dep && typeof dep.minutes === 'number' ? dep.minutes : null;
+  }
+
+  // Per-station walk time: hide departures that can no longer be reached.
+  _isReachable(dep) {
+    const walk = (dep && dep._walk) || 0;
+    if (walk <= 0) return true;
+    return typeof dep.minutes === 'number' && dep.minutes >= walk;
+  }
+
+  // True once a cached departure's absolute time has passed, so stale data
+  // drops rows instead of pinning them at "jetzt" forever.
+  _hasDeparted(dep) {
+    if (!dep || !dep.departure_time) return false;
+    const ts = Date.parse(dep.departure_time);
+    return !isNaN(ts) && ts < Date.now();
   }
 
   _renderLed(departures, unavailable) {
@@ -426,10 +536,10 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   static getStubConfig(hass) {
-    // Try to find a BVG departure sensor for a useful default
-    const entities = Object.keys(hass ? hass.states : {}).filter(
-      e => e.startsWith('sensor.bvg_') && e.endsWith('_departures')
-    );
+    // Find a BVG departure sensor by its attributes, not its name: entity ids
+    // are user-renameable and the bvg_ prefix is not guaranteed.
+    const states = (hass && hass.states) || {};
+    const entities = Object.keys(states).filter(e => isDeparturesSensor(states[e]));
     return {
       entities: entities.length > 0 ? [{ entity: entities[0], walk_time: 0 }] : [],
       rows: 3,
@@ -527,7 +637,12 @@ const FONT_5x7 = {
   '\u00DF': [0x7E, 0x01, 0x49, 0x49, 0x36], // ß
 };
 
-customElements.define('bvg-display-card', BvgDisplayCard);
+// Guarded: an unguarded re-define throws NotSupportedError, which would abort
+// the rest of this module and leave the editor unregistered and the card
+// missing from the "Add card" picker.
+if (!customElements.get('bvg-display-card')) {
+  customElements.define('bvg-display-card', BvgDisplayCard);
+}
 
 /**
  * BVG Display Card Editor
@@ -548,6 +663,35 @@ class BvgDisplayCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = { ...config };
     this._render();
+    // ha-entity-picker ships with the frontend but is only registered once a
+    // built-in editor has pulled it in. Render immediately with the plain text
+    // fallback, then swap in the autocomplete picker as soon as it exists.
+    if (!customElements.get('ha-entity-picker')) {
+      BvgDisplayCardEditor._loadEntityPicker().then((ok) => {
+        if (ok) this._render();
+      });
+    }
+  }
+
+  static _loadEntityPicker() {
+    if (BvgDisplayCardEditor._pickerPromise) {
+      return BvgDisplayCardEditor._pickerPromise;
+    }
+    BvgDisplayCardEditor._pickerPromise = (async () => {
+      if (customElements.get('ha-entity-picker')) return true;
+      try {
+        // Loading the built-in entities card editor registers ha-entity-picker.
+        const helpers = await window.loadCardHelpers();
+        const card = await helpers.createCardElement({ type: 'entities', entities: [] });
+        if (card && card.constructor && card.constructor.getConfigElement) {
+          await card.constructor.getConfigElement();
+        }
+      } catch (err) {
+        return false;
+      }
+      return !!customElements.get('ha-entity-picker');
+    })();
+    return BvgDisplayCardEditor._pickerPromise;
   }
 
   _render() {
@@ -557,8 +701,16 @@ class BvgDisplayCardEditor extends HTMLElement {
       this.attachShadow({ mode: 'open' });
     }
 
-    const rawEntities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
-    const entities = rawEntities.map(e => typeof e === 'string' ? { entity: e, walk_time: 0 } : { entity: e.entity, walk_time: e.walk_time || 0 });
+    // Same coercion as the card, plus a null guard: an empty YAML list item
+    // ("- ") reaches here as null and used to crash the editor only.
+    const rawEntities = BvgDisplayCard._asEntityList(
+      this._config.entities ?? this._config.entity
+    );
+    const entities = rawEntities
+      .filter(e => e !== null && e !== undefined && e !== '')
+      .map(e => typeof e === 'string'
+        ? { entity: e, walk_time: 0 }
+        : { entity: e.entity || '', walk_time: e.walk_time || 0 });
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
     const scrollEnabled = this._config.scroll_enabled !== false;
@@ -566,9 +718,12 @@ class BvgDisplayCardEditor extends HTMLElement {
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
 
+    const usePicker = !!customElements.get('ha-entity-picker');
     const entityListHtml = entities.map((e, idx) => `
       <div class="entity-row">
-        <input type="text" class="entity-input" data-idx="${idx}" value="${e.entity}" placeholder="sensor.bvg_..._departures">
+        ${usePicker
+          ? `<ha-entity-picker class="entity-input" data-idx="${idx}" allow-custom-entity></ha-entity-picker>`
+          : `<input type="text" class="entity-input" data-idx="${idx}" placeholder="sensor.bvg_..._departures">`}
         <input type="number" class="walk-input" data-idx="${idx}" value="${e.walk_time}" min="0" max="30" placeholder="0" title="Walk time (min)">
         <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       </div>
@@ -741,13 +896,32 @@ class BvgDisplayCardEditor extends HTMLElement {
     `;
 
     // Entity list events
-    this.shadowRoot.querySelectorAll('.entity-input').forEach(input => {
-      input.addEventListener('change', (e) => {
-        const idx = parseInt(e.target.dataset.idx);
-        const newEntities = [...entities];
-        newEntities[idx] = { ...newEntities[idx], entity: e.target.value };
-        this._updateEntities(newEntities);
-      });
+    const setEntityAt = (i, value) => {
+      const newEntities = [...entities];
+      newEntities[i] = { ...newEntities[i], entity: value || '' };
+      this._updateEntities(newEntities);
+    };
+
+    this.shadowRoot.querySelectorAll('.entity-input').forEach((input, idx) => {
+      if (usePicker) {
+        // Properties, not attributes: ha-entity-picker reads these off the
+        // element, and this also keeps entity ids out of the HTML string.
+        input.hass = this._hass;
+        input.value = entities[idx].entity;
+        input.includeDomains = ['sensor'];
+        // Offer only actual BVG departure sensors rather than every sensor.
+        input.entityFilter = isDeparturesSensor;
+        input.allowCustomEntity = true;
+        input.addEventListener('value-changed', (e) => {
+          e.stopPropagation();
+          setEntityAt(parseInt(input.dataset.idx, 10), e.detail && e.detail.value);
+        });
+      } else {
+        input.value = entities[idx].entity;
+        input.addEventListener('change', (e) => {
+          setEntityAt(parseInt(e.target.dataset.idx, 10), e.target.value);
+        });
+      }
     });
     this.shadowRoot.querySelectorAll('.walk-input').forEach(input => {
       input.addEventListener('change', (e) => {
@@ -812,17 +986,26 @@ class BvgDisplayCardEditor extends HTMLElement {
   }
 
   _updateEntityPicker() {
-    // Handled via entity list in _render
+    // hass usually arrives after the first render, and the pickers need it to
+    // resolve entity names and populate their dropdown.
+    if (!this.shadowRoot) return;
+    this.shadowRoot.querySelectorAll('ha-entity-picker').forEach((picker) => {
+      picker.hass = this._hass;
+    });
   }
 }
 
-customElements.define('bvg-display-card-editor', BvgDisplayCardEditor);
+if (!customElements.get('bvg-display-card-editor')) {
+  customElements.define('bvg-display-card-editor', BvgDisplayCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: 'bvg-display-card',
-  name: 'BVG Departure Display',
-  description: 'LED matrix style BVG departure board',
-  preview: true,
-  documentationURL: 'https://github.com/jako-dev/homeassistant-bvg-display',
-});
+if (!window.customCards.some(c => c.type === 'bvg-display-card')) {
+  window.customCards.push({
+    type: 'bvg-display-card',
+    name: 'BVG Departure Display',
+    description: 'LED matrix style BVG departure board',
+    preview: true,
+    documentationURL: 'https://github.com/jako-dev/homeassistant-bvg-display',
+  });
+}

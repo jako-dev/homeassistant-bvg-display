@@ -13,7 +13,8 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 - **Per-station walk time** — hide departures you can't reach in time
 - **Custom Lovelace card** with authentic LED matrix panel look
 - **UI config flow** — add stations via Settings > Integrations
-- **Visual card editor** — configure everything from the dashboard UI
+- **Visual card editor** — configure everything from the dashboard UI, with an
+  autocomplete station picker that only lists your BVG departure sensors
 - **Transport filters** — show/hide S-Bahn, U-Bahn, Tram, Bus, Ferry, IC/ICE, Regional
 - **Configurable departure count** (1, 3, 6, 9, 12, 15)
 - **Auto-scrolling** through departures (pauses when card is not visible)
@@ -53,7 +54,7 @@ Each station creates two sensors:
 
 | Entity | Description |
 |--------|-------------|
-| `sensor.bvg_<station>_next` | Next departure as human-readable text |
+| `sensor.bvg_<station>_next` | Next departure time (timestamp); line/direction/platform/delay/minutes in attributes |
 | `sensor.bvg_<station>_departures` | All departures with full details in attributes |
 
 ### Attributes of `*_departures` sensor
@@ -64,24 +65,41 @@ departures:
   - line: "U2"
     direction: "Pankow"
     product: "subway"
-    delay: 0
+    delay: 0                              # seconds
     platform: "1"
     cancelled: false
+    departure_time: "2026-08-18T10:05:00+02:00"
     minutes: 2
   - line: "S7"
     direction: "Ahrensfelde"
     product: "suburban"
-    delay: 60
+    delay: 60                             # seconds (1 min late)
     platform: "3"
     cancelled: false
+    departure_time: "2026-08-18T10:08:00+02:00"
     minutes: 5
 ```
+
+`departure_time` is the absolute departure instant — the card counts down from
+it locally, so the display stays accurate between the 30 s polls. `minutes` is
+recomputed on every update (i.e. accurate to within the 30 s polling interval)
+and is the convenient value for templates and automations; for anything that
+needs to be exact, derive it from `departure_time`.
 
 ## Lovelace Card
 
 ### Register the card resource
 
-The card resource is registered automatically when the integration is loaded. If you need to add it manually:
+The card is registered automatically when the integration loads — both as a frontend
+module and, on storage-mode dashboards, as an entry under **Settings → Dashboards →
+Resources**. You should not need to do anything here, and you will see a
+`/bvg-display/bvg-display-card.js?v=…` resource appear by itself. The integration keeps
+that entry's version up to date rather than adding a second one.
+
+> **Do not add it manually as well.** A second entry with a different URL (for example
+> without the `?v=` suffix) makes the browser load the card module twice.
+
+If automatic registration ever fails, you can add it manually:
 
 **Settings → Dashboards → Resources → Add Resource:**
 
@@ -137,7 +155,12 @@ Departures from all stations are merged and sorted by time. Each station's `walk
 
 ### Entity format
 
-Entities can be specified as plain strings (no walk time filtering) or objects:
+In the visual editor you do not need to type entity ids — the station field is an
+autocomplete picker filtered to sensors that actually expose departures, so only your
+BVG stations are offered. The detection is based on the sensor's attributes, not its
+name, so renamed entities still show up.
+
+In YAML, entities can be specified as plain strings (no walk time filtering) or objects:
 
 ```yaml
 entities:
@@ -164,14 +187,16 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 - No API key required
 - Rate limit: 100 requests/minute
 - Polling interval: 30 seconds (respects HA update coordinator)
-- Uses Home Assistant's shared HTTP session (no connection leaks)
+- Uses Home Assistant's shared HTTP session for all requests, including station search (no per-call session churn)
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| "Config entry already been setup" | Fixed in v1.5 — update to latest version. Entry reload races are now guarded. |
-| No departures shown | BVG API may be temporarily down. Entry will auto-retry (ConfigEntryNotReady). |
+| "Config entry already been setup" | Fixed — the entry no longer keeps state in `hass.data`, so reloads can't collide. |
+| Error / "Sensor nicht verfuegbar" after changing options | Fixed — option changes are applied in place instead of reloading the entry, so entities are never torn down. |
+| Brief "Sensor nicht verfuegbar" on HA restart | Expected while the integration loads. The card keeps showing the last departures for up to 2 minutes to bridge the gap. |
+| No departures shown | BVG API may be temporarily down. Short outages (up to 3 failed polls) are bridged with cached data; longer ones mark the entities unavailable and auto-retry. |
 | Card not rendering | Make sure the resource is registered (usually automatic). Check browser console. |
 | Entity unavailable | Check HA logs for API errors; verify internet connectivity |
 | Card shows "Sensor nicht verfuegbar" | The configured entity doesn't exist or is in `unavailable` state |
