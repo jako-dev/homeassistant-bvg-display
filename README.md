@@ -89,14 +89,16 @@ needs to be exact, derive it from `departure_time`.
 
 ### Register the card resource
 
-The card resource is registered automatically when the integration is loaded — you
-should not need to do anything here.
+The card is registered automatically when the integration loads — both as a frontend
+module and, on storage-mode dashboards, as an entry under **Settings → Dashboards →
+Resources**. You should not need to do anything here, and you will see a
+`/bvg-display/bvg-display-card.js?v=…` resource appear by itself. The integration keeps
+that entry's version up to date rather than adding a second one.
 
-> **Only add it manually if automatic registration failed.** Adding it while the
-> automatic registration is also active loads the card module twice, which can leave
-> the visual editor unregistered and the card missing from the "Add card" picker.
+> **Do not add it manually as well.** A second entry with a different URL (for example
+> without the `?v=` suffix) makes the browser load the card module twice.
 
-To add it manually:
+If automatic registration ever fails, you can add it manually:
 
 **Settings → Dashboards → Resources → Add Resource:**
 

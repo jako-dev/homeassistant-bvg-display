@@ -1,5 +1,6 @@
 """BVG Departure Display integration."""
 
+import logging
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,6 +19,8 @@ from .const import (
 )
 from .coordinator import BvgDepartureCoordinator
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS = ["sensor"]
 
 CARD_URL = "/bvg-display/bvg-display-card.js"
@@ -33,25 +36,68 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         return True
     hass.data[DOMAIN] = True
 
-    # Register the Lovelace card static path immediately so the frontend
-    # can always find it, regardless of config entry load state.
-    #
-    # cache_headers stays at its default (True). Serving the card uncacheable
-    # forced a fresh ~30 KB fetch on every dashboard load, and the dashboard
-    # does not wait for it: if the module had not finished evaluating by the
-    # time Lovelace built the card, the frontend rendered "Custom element
-    # doesn't exist: bvg-display-card" (shown as "Konfigurationsfehler").
-    # Caching collapses that race to a disk read on every load after the first.
+    # Serve the card. cache_headers stays at its default (True) so repeat loads
+    # avoid a network round trip; the ?v= below keeps upgrades from serving a
+    # stale copy (the query string is not part of aiohttp route matching).
     await hass.http.async_register_static_paths([
         StaticPathConfig(CARD_URL, str(CARD_PATH))
     ])
 
-    # Cache-bust on upgrade: the query string is not part of aiohttp routing,
-    # so the route above still serves it, but browsers treat it as a new URL.
     integration = await async_get_integration(hass, DOMAIN)
-    add_extra_js_url(hass, f"{CARD_URL}?v={integration.version or 'dev'}")
+    card_url = f"{CARD_URL}?v={integration.version or 'dev'}"
+
+    # Two registration paths on purpose, both pointing at the identical URL so
+    # the browser's module map runs the file only once:
+    #
+    # 1. add_extra_js_url bakes an import() into index.html at the moment that
+    #    page is served. It loads earliest -- but if index.html was served (or
+    #    cached by the browser/service worker) before this setup ran, the
+    #    import line simply isn't in the HTML, the module never loads, and the
+    #    dashboard shows "Custom element doesn't exist" until a fresh reload.
+    # 2. A Lovelace resource is fetched over the websocket on every dashboard
+    #    load, so it does not depend on the cached HTML and also works when
+    #    casting, where extra_module_url is dropped entirely.
+    add_extra_js_url(hass, card_url)
+    await _async_register_card_resource(hass, card_url)
 
     return True
+
+
+async def _async_register_card_resource(hass: HomeAssistant, card_url: str) -> None:
+    """Ensure the card is registered as a Lovelace resource (storage mode only).
+
+    Best effort: this reaches into the lovelace integration's storage
+    collection, so any failure is logged and ignored rather than breaking
+    setup -- add_extra_js_url alone still works.
+    """
+    try:
+        lovelace = hass.data.get("lovelace")
+        resources = getattr(lovelace, "resources", None)
+        if resources is None or getattr(lovelace, "mode", None) != "storage":
+            # YAML-mode Lovelace manages resources from configuration.yaml.
+            return
+
+        if not getattr(resources, "loaded", True):
+            await resources.async_load()
+
+        for item in resources.async_items():
+            if str(item.get("url", "")).split("?")[0] != CARD_URL:
+                continue
+            if item.get("url") != card_url:
+                # Same card, older version: update in place so repeated
+                # upgrades can't accumulate duplicate resource entries.
+                await resources.async_update_item(item["id"], {"url": card_url})
+            return
+
+        await resources.async_create_item({"res_type": "module", "url": card_url})
+    except Exception:  # noqa: BLE001 - never let this break setup
+        _LOGGER.debug(
+            "Could not register the Lovelace resource for %s; the card is still "
+            "served at %s and registered via extra_module_url",
+            DOMAIN,
+            CARD_URL,
+            exc_info=True,
+        )
 
 
 def _coordinator_options(entry: ConfigEntry) -> dict:
