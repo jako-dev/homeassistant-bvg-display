@@ -44,6 +44,7 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=f"{DOMAIN}_{station_id}",
             update_interval=timedelta(seconds=scan_interval),
+            always_update=False,
         )
 
     async def _async_update_data(self) -> list[dict]:
@@ -77,7 +78,12 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error fetching BVG data: {err}") from err
 
         departures = []
-        raw_departures = data.get("departures", data if isinstance(data, list) else [])
+        if isinstance(data, list):
+            raw_departures = data
+        elif isinstance(data, dict):
+            raw_departures = data.get("departures", [])
+        else:
+            raw_departures = []
 
         for dep in raw_departures:
             line = dep.get("line", {})

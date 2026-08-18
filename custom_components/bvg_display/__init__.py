@@ -7,7 +7,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_DEPARTURE_COUNT,
@@ -15,7 +14,6 @@ from .const import (
     CONF_STATION_ID,
     CONF_STATION_NAME,
     DEFAULT_DEPARTURE_COUNT,
-    DOMAIN,
 )
 from .coordinator import BvgDepartureCoordinator
 
@@ -29,8 +27,6 @@ CARD_PATH = Path(__file__).parent / "www" / "bvg-display-card.js"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the BVG Display integration (register frontend card)."""
-    hass.data.setdefault(DOMAIN, {})
-
     # Register the Lovelace card static path immediately so the frontend
     # can always find it, regardless of config entry load state.
     await hass.http.async_register_static_paths([
@@ -47,13 +43,6 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BVG Display from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-
-    # Guard against duplicate setup (race condition during reload)
-    if entry.entry_id in hass.data[DOMAIN]:
-        _LOGGER.debug("Entry %s already set up, skipping", entry.entry_id)
-        return True
-
     departure_count = entry.options.get(CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT)
     filters = entry.options.get(CONF_FILTERS, {})
 
@@ -65,14 +54,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         filters=filters,
     )
 
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as err:
-        raise ConfigEntryNotReady(
-            f"Failed to fetch initial data for {entry.data[CONF_STATION_NAME]}: {err}"
-        ) from err
+    await coordinator.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -88,7 +72,4 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

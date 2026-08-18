@@ -1,13 +1,15 @@
 """Config flow for BVG Departure Display."""
 
+import asyncio
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlowWithConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     BVG_API_BASE,
@@ -21,6 +23,10 @@ from .const import (
 )
 
 DEPARTURE_COUNT_OPTIONS = ["1", "3", "6", "9", "12", "15"]
+
+
+class _StationSearchError(Exception):
+    """Raised when the BVG API can't be reached or returns an error."""
 
 
 class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -41,10 +47,14 @@ class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             query = user_input.get("query", "").strip()
             if query:
-                self._stations = await self._search_stations(query)
-                if self._stations:
-                    return await self.async_step_select_station()
-                errors["base"] = "no_results"
+                try:
+                    self._stations = await self._search_stations(query)
+                except _StationSearchError:
+                    errors["base"] = "cannot_connect"
+                else:
+                    if self._stations:
+                        return await self.async_step_select_station()
+                    errors["base"] = "no_results"
 
         return self.async_show_form(
             step_id="user",
@@ -128,21 +138,28 @@ class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status != 200:
-                        return []
-                    data = await resp.json()
-        except aiohttp.ClientError:
-            return []
+            session = async_get_clientsession(self.hass)
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    raise _StationSearchError(f"BVG API returned {resp.status}")
+                data = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            raise _StationSearchError(str(err)) from err
+
+        if not isinstance(data, list):
+            raise _StationSearchError("Unexpected response shape from BVG API")
 
         stations = []
         for item in data:
-            if item.get("type") == "stop" or item.get("type") == "station":
-                stations.append({
-                    "id": item["id"],
-                    "name": item["name"],
-                })
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") not in ("stop", "station"):
+                continue
+            station_id = item.get("id")
+            station_name = item.get("name")
+            if not station_id or not station_name:
+                continue
+            stations.append({"id": station_id, "name": station_name})
         return stations
 
     @staticmethod
@@ -152,7 +169,7 @@ class BvgDisplayConfigFlow(ConfigFlow, domain=DOMAIN):
         return BvgDisplayOptionsFlow()
 
 
-class BvgDisplayOptionsFlow(OptionsFlowWithConfigEntry):
+class BvgDisplayOptionsFlow(OptionsFlow):
     """Handle options flow for BVG Display."""
 
     async def async_step_init(self, user_input=None) -> FlowResult:

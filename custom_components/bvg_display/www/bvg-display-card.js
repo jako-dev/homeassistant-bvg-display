@@ -45,13 +45,16 @@ class BvgDisplayCard extends HTMLElement {
       if (typeof e === 'string') {
         if (e) this._entityConfigs.push({ entity: e, walk_time: 0 });
       } else if (e && typeof e === 'object' && e.entity) {
-        this._entityConfigs.push({ entity: e.entity, walk_time: parseInt(e.walk_time, 10) || 0 });
+        this._entityConfigs.push({
+          entity: e.entity,
+          walk_time: Math.min(30, Math.max(0, parseInt(e.walk_time, 10) || 0)),
+        });
       }
       // Skip invalid/empty entries silently (editor intermediate states)
     }
 
-    this._rows = parseInt(config.rows, 10) || 3;
-    this._scrollSpeed = parseInt(config.scroll_speed, 10) || 3000;
+    this._rows = Math.min(6, Math.max(1, parseInt(config.rows, 10) || 3));
+    this._scrollSpeed = Math.max(250, parseInt(config.scroll_speed, 10) || 3000);
     this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
@@ -568,7 +571,7 @@ class BvgDisplayCardEditor extends HTMLElement {
 
     const entityListHtml = entities.map((e, idx) => `
       <div class="entity-row">
-        <input type="text" class="entity-input" data-idx="${idx}" value="${e.entity}" placeholder="sensor.bvg_..._departures">
+        <input type="text" class="entity-input" data-idx="${idx}" placeholder="sensor.bvg_..._departures">
         <input type="number" class="walk-input" data-idx="${idx}" value="${e.walk_time}" min="0" max="30" placeholder="0" title="Walk time (min)">
         <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       </div>
@@ -741,11 +744,12 @@ class BvgDisplayCardEditor extends HTMLElement {
     `;
 
     // Entity list events
-    this.shadowRoot.querySelectorAll('.entity-input').forEach(input => {
+    this.shadowRoot.querySelectorAll('.entity-input').forEach((input, idx) => {
+      input.value = entities[idx].entity;
       input.addEventListener('change', (e) => {
-        const idx = parseInt(e.target.dataset.idx);
+        const i = parseInt(e.target.dataset.idx);
         const newEntities = [...entities];
-        newEntities[idx] = { ...newEntities[idx], entity: e.target.value };
+        newEntities[i] = { ...newEntities[i], entity: e.target.value };
         this._updateEntities(newEntities);
       });
     });

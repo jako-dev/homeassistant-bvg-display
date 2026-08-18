@@ -53,7 +53,7 @@ Each station creates two sensors:
 
 | Entity | Description |
 |--------|-------------|
-| `sensor.bvg_<station>_next` | Next departure as human-readable text |
+| `sensor.bvg_<station>_next` | Next departure time (timestamp); line/direction/platform/delay/minutes in attributes |
 | `sensor.bvg_<station>_departures` | All departures with full details in attributes |
 
 ### Attributes of `*_departures` sensor
@@ -164,7 +164,7 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 - No API key required
 - Rate limit: 100 requests/minute
 - Polling interval: 30 seconds (respects HA update coordinator)
-- Uses Home Assistant's shared HTTP session (no connection leaks)
+- Uses Home Assistant's shared HTTP session for all requests, including station search (no per-call session churn)
 
 ## Troubleshooting
 
