@@ -89,7 +89,14 @@ needs to be exact, derive it from `departure_time`.
 
 ### Register the card resource
 
-The card resource is registered automatically when the integration is loaded. If you need to add it manually:
+The card resource is registered automatically when the integration is loaded — you
+should not need to do anything here.
+
+> **Only add it manually if automatic registration failed.** Adding it while the
+> automatic registration is also active loads the card module twice, which can leave
+> the visual editor unregistered and the card missing from the "Add card" picker.
+
+To add it manually:
 
 **Settings → Dashboards → Resources → Add Resource:**
 

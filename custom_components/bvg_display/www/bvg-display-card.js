@@ -30,6 +30,23 @@ class BvgDisplayCard extends HTMLElement {
     this._visible = true;
     this._tickTimer = null;
     this._lastGood = null;
+    // Defaults mirror setConfig: HA may call getCardSize()/getGridOptions()
+    // or connectedCallback before setConfig, and undefined here would make
+    // those return NaN and corrupt the dashboard layout.
+    this._rows = 3;
+    this._scrollSpeed = 3000;
+    this._scrollEnabled = true;
+    this._showPlatform = true;
+    this._showHeader = false;
+    this._frameStyle = 'panel';
+  }
+
+  // Accepts a list, a single entry, or nothing. A bare string must not be
+  // spread into one entity per character, and a mapping must not throw.
+  static _asEntityList(value) {
+    if (Array.isArray(value)) return value;
+    if (value === undefined || value === null || value === '') return [];
+    return [value];
   }
 
   set hass(hass) {
@@ -47,7 +64,7 @@ class BvgDisplayCard extends HTMLElement {
     this._config = { ...config };
 
     // Normalize entities: support string[] or {entity, walk_time}[]
-    const rawEntities = config.entities || (config.entity ? [config.entity] : []);
+    const rawEntities = BvgDisplayCard._asEntityList(config.entities ?? config.entity);
     this._entityConfigs = [];
     for (const e of rawEntities) {
       if (typeof e === 'string') {
@@ -512,7 +529,7 @@ class BvgDisplayCard extends HTMLElement {
 
   static getStubConfig(hass) {
     // Try to find a BVG departure sensor for a useful default
-    const entities = Object.keys(hass ? hass.states : {}).filter(
+    const entities = Object.keys((hass && hass.states) || {}).filter(
       e => e.startsWith('sensor.bvg_') && e.endsWith('_departures')
     );
     return {
@@ -612,7 +629,12 @@ const FONT_5x7 = {
   '\u00DF': [0x7E, 0x01, 0x49, 0x49, 0x36], // ß
 };
 
-customElements.define('bvg-display-card', BvgDisplayCard);
+// Guarded: an unguarded re-define throws NotSupportedError, which would abort
+// the rest of this module and leave the editor unregistered and the card
+// missing from the "Add card" picker.
+if (!customElements.get('bvg-display-card')) {
+  customElements.define('bvg-display-card', BvgDisplayCard);
+}
 
 /**
  * BVG Display Card Editor
@@ -642,8 +664,16 @@ class BvgDisplayCardEditor extends HTMLElement {
       this.attachShadow({ mode: 'open' });
     }
 
-    const rawEntities = this._config.entities || (this._config.entity ? [this._config.entity] : []);
-    const entities = rawEntities.map(e => typeof e === 'string' ? { entity: e, walk_time: 0 } : { entity: e.entity, walk_time: e.walk_time || 0 });
+    // Same coercion as the card, plus a null guard: an empty YAML list item
+    // ("- ") reaches here as null and used to crash the editor only.
+    const rawEntities = BvgDisplayCard._asEntityList(
+      this._config.entities ?? this._config.entity
+    );
+    const entities = rawEntities
+      .filter(e => e !== null && e !== undefined && e !== '')
+      .map(e => typeof e === 'string'
+        ? { entity: e, walk_time: 0 }
+        : { entity: e.entity || '', walk_time: e.walk_time || 0 });
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
     const scrollEnabled = this._config.scroll_enabled !== false;
@@ -902,13 +932,17 @@ class BvgDisplayCardEditor extends HTMLElement {
   }
 }
 
-customElements.define('bvg-display-card-editor', BvgDisplayCardEditor);
+if (!customElements.get('bvg-display-card-editor')) {
+  customElements.define('bvg-display-card-editor', BvgDisplayCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: 'bvg-display-card',
-  name: 'BVG Departure Display',
-  description: 'LED matrix style BVG departure board',
-  preview: true,
-  documentationURL: 'https://github.com/jako-dev/homeassistant-bvg-display',
-});
+if (!window.customCards.some(c => c.type === 'bvg-display-card')) {
+  window.customCards.push({
+    type: 'bvg-display-card',
+    name: 'BVG Departure Display',
+    description: 'LED matrix style BVG departure board',
+    preview: true,
+    documentationURL: 'https://github.com/jako-dev/homeassistant-bvg-display',
+  });
+}

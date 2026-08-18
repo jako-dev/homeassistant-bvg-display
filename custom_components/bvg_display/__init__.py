@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_DEPARTURE_COUNT,
@@ -34,14 +35,21 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     # Register the Lovelace card static path immediately so the frontend
     # can always find it, regardless of config entry load state.
+    #
+    # cache_headers stays at its default (True). Serving the card uncacheable
+    # forced a fresh ~30 KB fetch on every dashboard load, and the dashboard
+    # does not wait for it: if the module had not finished evaluating by the
+    # time Lovelace built the card, the frontend rendered "Custom element
+    # doesn't exist: bvg-display-card" (shown as "Konfigurationsfehler").
+    # Caching collapses that race to a disk read on every load after the first.
     await hass.http.async_register_static_paths([
-        StaticPathConfig(
-            CARD_URL,
-            str(CARD_PATH),
-            cache_headers=False,
-        )
+        StaticPathConfig(CARD_URL, str(CARD_PATH))
     ])
-    add_extra_js_url(hass, CARD_URL)
+
+    # Cache-bust on upgrade: the query string is not part of aiohttp routing,
+    # so the route above still serves it, but browsers treat it as a new URL.
+    integration = await async_get_integration(hass, DOMAIN)
+    add_extra_js_url(hass, f"{CARD_URL}?v={integration.version or 'dev'}")
 
     return True
 
