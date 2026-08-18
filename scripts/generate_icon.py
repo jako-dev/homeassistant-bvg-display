@@ -80,7 +80,9 @@ for i, (line, badge_bg, badge_fg, mins) in enumerate(ROWS):
     mx = right - len(mins) * 6
     draw_text(d, mins, mx, y, YELLOW, SS)
 
-out_dir = ROOT / "brands"
+# Home Assistant 2026.3+ serves brand images straight out of the integration's
+# own brand/ directory, checking it before the brands CDN.
+out_dir = ROOT / "custom_components" / "bvg_display" / "brand"
 out_dir.mkdir(exist_ok=True)
 img.resize((512, 512), Image.LANCZOS).save(out_dir / "icon@2x.png")
 img.resize((256, 256), Image.LANCZOS).save(out_dir / "icon.png")
