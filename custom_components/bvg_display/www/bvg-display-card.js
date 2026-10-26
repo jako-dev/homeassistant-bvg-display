@@ -16,6 +16,8 @@ const TICK_INTERVAL_MS = 15000;
 // How long the last good departures stay on screen while entities are
 // unavailable (HA restart, integration reload, brief API outage).
 const STALE_GRACE_MS = 120000;
+// Arriving train ("sofort") blinks like on the DAISY displays: 1 s period.
+const BLINK_INTERVAL_MS = 500;
 
 // Selectable display styles. `led_matrix` is the original colourful panel;
 // `bvg_platform` mimics the amber LED train destination displays on BVG
@@ -71,6 +73,9 @@ class BvgDisplayCard extends HTMLElement {
     this._scrollEnabled = true;
     this._showPlatform = true;
     this._showHeader = false;
+    this._blinkArriving = false;
+    this._blinkOn = true;
+    this._blinkTimer = null;
     this._frameStyle = 'panel';
     this._style = DEFAULT_STYLE;
     this._theme = DEFAULT_THEME;
@@ -149,6 +154,7 @@ class BvgDisplayCard extends HTMLElement {
     this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
+    this._blinkArriving = config.blink_arriving === true;
     this._frameStyle = config.frame_style || 'panel';
     this._style = STYLES.includes(config.style) ? config.style : DEFAULT_STYLE;
     this._theme = PLATFORM_THEMES[config.theme] ? config.theme : DEFAULT_THEME;
@@ -163,6 +169,8 @@ class BvgDisplayCard extends HTMLElement {
       this._render();
       this._updateCard();
       this._restartScroll();
+      // Picks up a changed blink_arriving setting.
+      this._startTick();
     }
   }
 
@@ -191,6 +199,13 @@ class BvgDisplayCard extends HTMLElement {
     this._stopTick();
     if (!this._visible) return;
     this._tickTimer = setInterval(() => this._updateCard(), TICK_INTERVAL_MS);
+    if (this._blinkArriving) {
+      // Redraws only the LED canvas from the last data; no state lookups.
+      this._blinkTimer = setInterval(() => {
+        this._blinkOn = !this._blinkOn;
+        if (this._lastRender) this._renderLed(...this._lastRender);
+      }, BLINK_INTERVAL_MS);
+    }
   }
 
   _stopTick() {
@@ -198,6 +213,11 @@ class BvgDisplayCard extends HTMLElement {
       clearInterval(this._tickTimer);
       this._tickTimer = null;
     }
+    if (this._blinkTimer) {
+      clearInterval(this._blinkTimer);
+      this._blinkTimer = null;
+    }
+    this._blinkOn = true;
   }
 
   _observeVisibility() {
@@ -512,6 +532,7 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _renderLed(departures, unavailable) {
+    this._lastRender = [departures, unavailable];
     const ctx = this._ctx;
     const SCALE = 3;
     const W = this._canvas.width;
@@ -548,9 +569,15 @@ class BvgDisplayCard extends HTMLElement {
 
     const rows = this._rows;
     const { rowHeight } = this._layout();
-    const drawRow = isPlatform
+    const renderRow = isPlatform
       ? (dep, y) => this._renderPlatformRow(ctx, dep, y, SCALE)
       : (dep, y) => this._renderDepartureRow(ctx, dep, y, SCALE);
+    // The whole row of an arriving train blinks (off phase: row left dark).
+    const drawRow = (dep, y) => {
+      const arriving = dep && !dep.cancelled && typeof dep.minutes === 'number' && dep.minutes <= 0;
+      if (this._blinkArriving && arriving && !this._blinkOn) return;
+      renderRow(dep, y);
+    };
 
     if (!this._scrollEnabled) {
       // Static mode: show only the first N rows
@@ -1015,6 +1042,7 @@ class BvgDisplayCardEditor extends HTMLElement {
     const scrollEnabled = this._config.scroll_enabled !== false;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
+    const blinkArriving = this._config.blink_arriving === true;
     const frameStyle = this._config.frame_style || 'panel';
     const style = STYLES.includes(this._config.style) ? this._config.style : DEFAULT_STYLE;
     const isPlatform = style === 'bvg_platform';
@@ -1242,6 +1270,15 @@ class BvgDisplayCardEditor extends HTMLElement {
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
           </div>
         </div>
+        <div class="field">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <label>Blink Arriving Train</label>
+              <span class="description">The row of a train departing now blinks once per second, like on BVG platforms</span>
+            </div>
+            <input type="checkbox" id="blink_arriving" ${blinkArriving ? 'checked' : ''}>
+          </div>
+        </div>
       </div>
     `;
 
@@ -1341,6 +1378,9 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
     this.shadowRoot.getElementById('show_header').addEventListener('change', (e) => {
       this._updateConfig('show_header', e.target.checked);
+    });
+    this.shadowRoot.getElementById('blink_arriving').addEventListener('change', (e) => {
+      this._updateConfig('blink_arriving', e.target.checked);
     });
   }
 

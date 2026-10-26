@@ -184,6 +184,7 @@ show_header: true      # station name in that strip as well
 | `scroll_speed` | `3000` | Auto-scroll interval in milliseconds |
 | `show_platform` | `true` | Show platform/track number |
 | `show_header` | `false` | Display station name(s) above the panel |
+| `blink_arriving` | `false` | Make the row of a train departing now ("sofort") blink once per second, like on BVG platforms |
 | `frame_style` | `panel` | Panel border style for `led_matrix`: `panel` (3D frame) or `flat` (minimal) |
 
 ### Entity format
