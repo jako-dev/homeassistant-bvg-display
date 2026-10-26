@@ -25,6 +25,11 @@ const DEFAULT_STYLE = 'led_matrix';
 const DEFAULT_LED_COLOR = '#ffa31a';
 // Logical x where the "Ziel" column starts in the bvg_platform style.
 const PLATFORM_DEST_X = 46;
+// Row pitch of bvg_platform: like the real display, the big digits fill
+// about 60% of a row, leaving dark space between departures.
+const PLATFORM_ROW_HEIGHT = 24;
+const PLATFORM_BIG_Y = 5;   // top of the double-size glyphs within a row
+const PLATFORM_SMALL_Y = 9; // top of normal glyphs, vertically centered
 
 class BvgDisplayCard extends HTMLElement {
   static get properties() {
@@ -194,7 +199,7 @@ class BvgDisplayCard extends HTMLElement {
   // rows so line and minutes can be drawn in the double-size LED font.
   _layout() {
     return this._style === 'bvg_platform'
-      ? { width: 176, rowHeight: 16 }
+      ? { width: 176, rowHeight: PLATFORM_ROW_HEIGHT }
       : { width: 128, rowHeight: 10 };
   }
 
@@ -568,7 +573,7 @@ class BvgDisplayCard extends HTMLElement {
     // Line: double size if it fits the column ("U7", "M10"), else normal.
     const line = (dep.line || '?').toUpperCase();
     const lineBig = this._textWidth(line, big) <= PLATFORM_DEST_X - 4;
-    this._drawString(ctx, line, 1, lineBig ? y + 1 : y + 4, color, scale,
+    this._drawString(ctx, line, 1, y + (lineBig ? PLATFORM_BIG_Y : PLATFORM_SMALL_Y), color, scale,
       lineBig ? big : small);
 
     // Minutes: "2'" in the big font; text states in the normal font.
@@ -589,15 +594,17 @@ class BvgDisplayCard extends HTMLElement {
     const tick = timeOpts === big && timeStr !== '--';
     const tickW = tick ? 4 : 0;
     const timeX = W - 1 - tickW - this._textWidth(timeStr, timeOpts);
-    this._drawString(ctx, timeStr, timeX, timeOpts === big ? y + 1 : y + 4,
+    this._drawString(ctx, timeStr, timeX,
+      y + (timeOpts === big ? PLATFORM_BIG_Y : PLATFORM_SMALL_Y),
       color, scale, timeOpts);
     if (tick) {
-      this._drawString(ctx, "'", W - 1 - tickW, y, color, scale, small);
+      this._drawString(ctx, "'", W - 1 - tickW, y + PLATFORM_BIG_Y - 1, color, scale, small);
     }
 
     const advance = this._textWidth('a', small) + 1;
     const chars = Math.floor((timeX - 6 - PLATFORM_DEST_X) / advance);
-    this._drawString(ctx, this._fit(dep.direction || '', chars), PLATFORM_DEST_X, y + 4,
+    this._drawString(ctx, this._fit(dep.direction || '', chars), PLATFORM_DEST_X,
+      y + PLATFORM_SMALL_Y,
       color, scale, small);
   }
 
@@ -736,11 +743,19 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   getCardSize() {
-    const extra = this._style === 'bvg_platform' ? 2 : 0; // labels + footer strip
-    return Math.max(2, Math.ceil(this._rows * 1.2) + extra);
+    if (this._style === 'bvg_platform') {
+      // Taller rows plus the printed labels and footer strip.
+      return Math.max(3, Math.ceil(this._rows * 1.6) + 2);
+    }
+    return Math.max(2, Math.ceil(this._rows * 1.2));
   }
 
   getGridOptions() {
+    if (this._style === 'bvg_platform') {
+      // Let the card take the height its fixed aspect ratio needs instead
+      // of being squeezed into a fixed number of grid rows.
+      return { rows: 'auto', columns: 12, min_columns: 6 };
+    }
     return {
       rows: Math.max(2, this._rows + (this._style === 'bvg_platform' ? 2 : 0)),
       columns: 12,
