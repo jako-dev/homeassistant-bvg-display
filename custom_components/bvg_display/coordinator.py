@@ -5,6 +5,7 @@ import logging
 
 import aiohttp
 import asyncio
+import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,8 +17,12 @@ from .const import (
     DEFAULT_DEPARTURE_COUNT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    SOURCE_BVG,
+    SOURCE_TRANSITOUS,
+    TRANSITOUS_MIN_INTERVAL,
     TRANSPORT_TYPES,
 )
+from . import transitous
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +33,7 @@ MAX_CONSECUTIVE_FAILURES = 3
 
 
 class BvgDepartureCoordinator(DataUpdateCoordinator):
-    """Fetch BVG departure data."""
+    """Fetch departure data from BVG or Transitous."""
 
     def __init__(
         self,
@@ -38,14 +43,30 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
         station_name: str,
         departure_count: int = DEFAULT_DEPARTURE_COUNT,
         filters: dict | None = None,
-        scan_interval: int = DEFAULT_SCAN_INTERVAL,
+        source: str = SOURCE_BVG,
+        transitous_fallback: bool = True,
     ) -> None:
         """Initialize the coordinator."""
         self.station_id = station_id
         self.station_name = station_name
         self.departure_count = departure_count
         self.filters = filters or {}
+        self.source = source
+        self.transitous_fallback = transitous_fallback
+        # Where the current data came from; differs from source while a BVG
+        # entry is running on the Transitous fallback.
+        self.active_source = source
         self._consecutive_failures = 0
+        # Transitous stop id: the entry's own id, or resolved lazily from the
+        # BVG id on the first fallback (False once resolving found nothing).
+        self._transitous_stop_id: str | bool | None = (
+            station_id if source == SOURCE_TRANSITOUS else None
+        )
+        self._transitous_last_request = 0.0
+
+        scan_interval = (
+            TRANSITOUS_MIN_INTERVAL if source == SOURCE_TRANSITOUS else DEFAULT_SCAN_INTERVAL
+        )
 
         # config_entry is passed explicitly: the implicit ContextVar fallback
         # is deprecated (removed in HA 2026.8) and silently skips wiring
@@ -58,7 +79,9 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=scan_interval),
         )
 
-    def update_options(self, departure_count: int, filters: dict | None) -> None:
+    def update_options(
+        self, departure_count: int, filters: dict | None, transitous_fallback: bool
+    ) -> None:
         """Apply changed options in place.
 
         Lets the options flow take effect without reloading the config entry,
@@ -67,11 +90,14 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
         """
         self.departure_count = departure_count
         self.filters = filters or {}
+        self.transitous_fallback = transitous_fallback
+        # Force a fresh fetch so changed filters show up right away.
+        self._transitous_last_request = 0.0
 
     async def _async_update_data(self) -> list[dict]:
         """Fetch departures, tolerating short-lived API outages."""
         try:
-            departures = await self._fetch_departures()
+            departures = await self._fetch_with_fallback()
         except UpdateFailed as err:
             self._consecutive_failures += 1
             # "is not None", not truthiness: an empty list is a valid cached
@@ -79,7 +105,7 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             # still count as having data to fall back on.
             if self.data is not None and self._consecutive_failures <= MAX_CONSECUTIVE_FAILURES:
                 _LOGGER.warning(
-                    "BVG update failed for %s (%s/%s), serving cached departures: %s",
+                    "Departure update failed for %s (%s/%s), serving cached departures: %s",
                     self.station_name,
                     self._consecutive_failures,
                     MAX_CONSECUTIVE_FAILURES,
@@ -89,6 +115,69 @@ class BvgDepartureCoordinator(DataUpdateCoordinator):
             raise
 
         self._consecutive_failures = 0
+        return departures
+
+    async def _fetch_with_fallback(self) -> list[dict]:
+        """Fetch from the configured source, falling back to Transitous."""
+        if self.source == SOURCE_TRANSITOUS:
+            return await self._fetch_transitous()
+
+        try:
+            departures = await self._fetch_departures()
+        except UpdateFailed as err:
+            if not self.transitous_fallback or self._transitous_stop_id is False:
+                raise
+            if self.active_source == SOURCE_BVG:
+                _LOGGER.info(
+                    "BVG API failed for %s (%s), falling back to Transitous",
+                    self.station_name,
+                    err,
+                )
+            return await self._fetch_transitous()
+
+        if self.active_source != SOURCE_BVG:
+            _LOGGER.info("BVG API is back for %s", self.station_name)
+        self.active_source = SOURCE_BVG
+        return departures
+
+    async def _fetch_transitous(self) -> list[dict]:
+        """Fetch departures from Transitous, at most once a minute."""
+        # The BVG poll runs every 30s; while on the fallback, reuse the last
+        # Transitous result in between so Transitous sees one request a minute.
+        # Countdowns stay correct since the sensors work from absolute times.
+        if (
+            self.active_source == SOURCE_TRANSITOUS
+            and self.data is not None
+            and time.monotonic() - self._transitous_last_request < TRANSITOUS_MIN_INTERVAL - 5
+        ):
+            return self.data
+
+        self._transitous_last_request = time.monotonic()
+        try:
+            if self._transitous_stop_id is None:
+                self._transitous_stop_id = (
+                    await transitous.async_resolve_bvg_stop(
+                        self.hass, self.station_id, self.station_name
+                    )
+                    or False
+                )
+                if self._transitous_stop_id is False:
+                    _LOGGER.warning(
+                        "No Transitous stop found for %s (%s), fallback disabled",
+                        self.station_name,
+                        self.station_id,
+                    )
+                    raise UpdateFailed(f"No Transitous stop for {self.station_name}")
+
+            departures = await transitous.async_fetch_departures(
+                self.hass, self._transitous_stop_id, self.departure_count, self.filters
+            )
+        except transitous.TransitousError as err:
+            raise UpdateFailed(
+                f"Error fetching Transitous data for {self.station_name}: {err}"
+            ) from err
+
+        self.active_source = SOURCE_TRANSITOUS
         return departures
 
     async def _fetch_departures(self) -> list[dict]:

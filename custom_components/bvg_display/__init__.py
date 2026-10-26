@@ -12,10 +12,13 @@ from homeassistant.loader import async_get_integration
 from .const import (
     CONF_DEPARTURE_COUNT,
     CONF_FILTERS,
+    CONF_SOURCE,
     CONF_STATION_ID,
     CONF_STATION_NAME,
+    CONF_TRANSITOUS_FALLBACK,
     DEFAULT_DEPARTURE_COUNT,
     DOMAIN,
+    SOURCE_BVG,
 )
 from .coordinator import BvgDepartureCoordinator
 
@@ -111,6 +114,7 @@ def _coordinator_options(entry: ConfigEntry) -> dict:
             CONF_DEPARTURE_COUNT, DEFAULT_DEPARTURE_COUNT
         ),
         "filters": entry.options.get(CONF_FILTERS, {}),
+        "transitous_fallback": entry.options.get(CONF_TRANSITOUS_FALLBACK, True),
     }
 
 
@@ -121,6 +125,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry,
         station_id=entry.data[CONF_STATION_ID],
         station_name=entry.data[CONF_STATION_NAME],
+        # Entries created before Transitous support have no source: BVG.
+        source=entry.data.get(CONF_SOURCE, SOURCE_BVG),
         **_coordinator_options(entry),
     )
 
