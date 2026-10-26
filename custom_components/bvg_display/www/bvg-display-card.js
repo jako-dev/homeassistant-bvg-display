@@ -264,10 +264,19 @@ class BvgDisplayCard extends HTMLElement {
           border-radius: 4px;
           padding: 2px;
         }
+        /* The display housing is the card itself: no HA card background around it. */
+        ha-card.bvg-card-platform {
+          background: none;
+          border: none;
+          box-shadow: none;
+          padding: 0;
+          border-radius: 4px;
+        }
         .bvg-platform {
           background: linear-gradient(#2a2a2a, #1f1f1f);
           border: 1px solid #3a3a3a;
           border-radius: 4px;
+          overflow: hidden;
           padding: 4% 5% 0;
           container-type: inline-size;
           box-shadow: 0 2px 6px rgba(0,0,0,0.6);
@@ -317,7 +326,7 @@ class BvgDisplayCard extends HTMLElement {
           font-family: monospace;
         }
       </style>
-      <ha-card>
+      <ha-card class="${isPlatform ? 'bvg-card-platform' : ''}">
         ${htmlHeader ? '<div class="bvg-header"></div>' : ''}
         ${panelHtml}
       </ha-card>
