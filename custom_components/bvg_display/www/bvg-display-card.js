@@ -1,6 +1,6 @@
 /**
  * BVG Display Card - LED Matrix Style Lovelace Card
- * Renders BVG departures as a pixel-art LED panel
+ * Renders BVG departures as a pixel-art LED panel, in one of several styles
  */
 
 // Identifies a BVG departures sensor by what it exposes rather than by its
@@ -16,6 +16,15 @@ const TICK_INTERVAL_MS = 15000;
 // How long the last good departures stay on screen while entities are
 // unavailable (HA restart, integration reload, brief API outage).
 const STALE_GRACE_MS = 120000;
+
+// Selectable display styles. `led_matrix` is the original colourful panel;
+// `bvg_platform` mimics the amber LED train destination displays on BVG
+// U-Bahn platforms (printed "Linie / Ziel / Abfahrt" labels, "Gleis" strip).
+const STYLES = ['led_matrix', 'bvg_platform'];
+const DEFAULT_STYLE = 'led_matrix';
+const DEFAULT_LED_COLOR = '#ffa31a';
+// Logical x where the "Ziel" column starts in the bvg_platform style.
+const PLATFORM_DEST_X = 46;
 
 class BvgDisplayCard extends HTMLElement {
   static get properties() {
@@ -47,6 +56,8 @@ class BvgDisplayCard extends HTMLElement {
     this._showPlatform = true;
     this._showHeader = false;
     this._frameStyle = 'panel';
+    this._style = DEFAULT_STYLE;
+    this._ledColor = DEFAULT_LED_COLOR;
   }
 
   // Accepts a list, a single entry, or nothing. A bare string must not be
@@ -55,6 +66,16 @@ class BvgDisplayCard extends HTMLElement {
     if (Array.isArray(value)) return value;
     if (value === undefined || value === null || value === '') return [];
     return [value];
+  }
+
+  // Line filter: list or comma-separated string -> normalized names ("M10").
+  static _parseLines(value) {
+    const list = Array.isArray(value) ? value : String(value ?? '').split(',');
+    return list.map(BvgDisplayCard._normLine).filter(Boolean);
+  }
+
+  static _normLine(line) {
+    return String(line ?? '').toUpperCase().replace(/\s/g, '');
   }
 
   set hass(hass) {
@@ -76,11 +97,12 @@ class BvgDisplayCard extends HTMLElement {
     this._entityConfigs = [];
     for (const e of rawEntities) {
       if (typeof e === 'string') {
-        if (e) this._entityConfigs.push({ entity: e, walk_time: 0 });
+        if (e) this._entityConfigs.push({ entity: e, walk_time: 0, lines: [] });
       } else if (e && typeof e === 'object' && e.entity) {
         this._entityConfigs.push({
           entity: e.entity,
           walk_time: Math.min(30, Math.max(0, parseInt(e.walk_time, 10) || 0)),
+          lines: BvgDisplayCard._parseLines(e.lines),
         });
       }
       // Skip invalid/empty entries silently (editor intermediate states)
@@ -92,6 +114,9 @@ class BvgDisplayCard extends HTMLElement {
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
     this._frameStyle = config.frame_style || 'panel';
+    this._style = STYLES.includes(config.style) ? config.style : DEFAULT_STYLE;
+    this._ledColor = /^#[0-9a-f]{6}$/i.test(config.led_color || '')
+      ? config.led_color : DEFAULT_LED_COLOR;
     this._scrollIndex = 0;
     // Drop the cached snapshot: it belongs to the previous entity set and
     // must not be resurrected under a newly configured station.
@@ -165,12 +190,41 @@ class BvgDisplayCard extends HTMLElement {
     }
   }
 
+  // Logical canvas geometry per style. bvg_platform is wider and uses taller
+  // rows so line and minutes can be drawn in the double-size LED font.
+  _layout() {
+    return this._style === 'bvg_platform'
+      ? { width: 176, rowHeight: 16 }
+      : { width: 128, rowHeight: 10 };
+  }
+
   _render() {
     const SCALE = 3;
-    const logicalH = this._rows * 10 + 2 + (this._showHeader ? 10 : 0);
-    const canvasW = 128 * SCALE;
+    const isPlatform = this._style === 'bvg_platform';
+    const { width, rowHeight } = this._layout();
+    const htmlHeader = this._showHeader && !isPlatform;
+    const logicalH = this._rows * rowHeight + 2 + (htmlHeader ? 10 : 0);
+    const canvasW = width * SCALE;
     const canvasH = logicalH * SCALE;
     const frameClass = this._frameStyle === 'flat' ? 'bvg-panel-flat' : 'bvg-panel-frame';
+    // Printed labels line up with the LED columns, so they are positioned in
+    // percent of the canvas width.
+    const zielLeft = (PLATFORM_DEST_X / width) * 100;
+    const panelHtml = isPlatform ? `
+        <div class="bvg-platform">
+          <div class="bvg-platform-labels">
+            <span>Linie</span>
+            <span style="position:absolute;left:${zielLeft}%;">Ziel</span>
+            <span style="margin-left:auto;">Abfahrt</span>
+          </div>
+          <div class="bvg-platform-led">
+            <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
+          </div>
+          <div class="bvg-platform-footer"></div>
+        </div>` : `
+        <div class="${frameClass}">
+          <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
+        </div>`;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -205,6 +259,45 @@ class BvgDisplayCard extends HTMLElement {
           border-radius: 4px;
           padding: 2px;
         }
+        .bvg-platform {
+          background: linear-gradient(#2a2a2a, #1f1f1f);
+          border: 1px solid #3a3a3a;
+          border-radius: 4px;
+          padding: 4% 5% 0;
+          container-type: inline-size;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+        }
+        .bvg-platform-labels {
+          position: relative;
+          display: flex;
+          color: #efe4c4;
+          font-family: "Helvetica Neue", Arial, sans-serif;
+          font-weight: 600;
+          font-size: clamp(0.75rem, 4.6cqw, 1.7rem);
+          line-height: 1.2;
+          padding-bottom: 0.15em;
+        }
+        .bvg-platform-led {
+          background: #17130b;
+          border-radius: 2px;
+          padding: 1.5%;
+          box-shadow: inset 0 0 8px rgba(0,0,0,0.9);
+        }
+        .bvg-platform-footer {
+          color: #cfc6a6;
+          font-family: "Helvetica Neue", Arial, sans-serif;
+          font-weight: 600;
+          font-size: clamp(0.7rem, 3.8cqw, 1.4rem);
+          line-height: 1.6;
+          min-height: 1.6em;
+          margin: 3% -5.3% 0;
+          padding: 0 5%;
+          background: #141414;
+          border-top: 1px solid #333;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
         .bvg-canvas {
           width: 100%;
           height: auto;
@@ -220,15 +313,15 @@ class BvgDisplayCard extends HTMLElement {
         }
       </style>
       <ha-card>
-        ${this._showHeader ? '<div class="bvg-header"></div>' : ''}
-        <div class="${frameClass}">
-          <canvas class="bvg-canvas" width="${canvasW}" height="${canvasH}"></canvas>
-        </div>
+        ${htmlHeader ? '<div class="bvg-header"></div>' : ''}
+        ${panelHtml}
       </ha-card>
     `;
     this._canvas = this.shadowRoot.querySelector('.bvg-canvas');
     this._ctx = this._canvas.getContext('2d');
     this._headerEl = this.shadowRoot.querySelector('.bvg-header');
+    this._footerEl = this.shadowRoot.querySelector('.bvg-platform-footer');
+    this._offPattern = null;
   }
 
   _restartScroll() {
@@ -283,7 +376,11 @@ class BvgDisplayCard extends HTMLElement {
       // Recompute minutes locally so the countdown stays live between updates.
       // _walk is carried along so the filter can be re-applied to cached rows.
       const walkTime = ec.walk_time || 0;
-      const withMinutes = deps.map(
+      const lineFilter = ec.lines || [];
+      const withMinutes = deps
+        .filter(d => lineFilter.length === 0 ||
+          lineFilter.includes(BvgDisplayCard._normLine(d.line)))
+        .map(
         d => ({ ...d, minutes: this._minutesFor(d), _walk: walkTime })
       );
       allDepartures = allDepartures.concat(withMinutes.filter(d => this._isReachable(d)));
@@ -318,6 +415,7 @@ class BvgDisplayCard extends HTMLElement {
       this._headerEl.textContent = stationNames.join(' / ');
     }
 
+    this._stationNames = stationNames;
     this._renderLed(allDepartures, unavailable);
   }
 
@@ -353,34 +451,47 @@ class BvgDisplayCard extends HTMLElement {
     const SCALE = 3;
     const W = this._canvas.width;
     const H = this._canvas.height;
+    const isPlatform = this._style === 'bvg_platform';
 
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = isPlatform ? '#17130b' : '#000';
     ctx.fillRect(0, 0, W, H);
+    if (isPlatform) {
+      // Unlit LEDs stay faintly visible, like on the real display.
+      ctx.fillStyle = this._getOffPattern(ctx, SCALE);
+      ctx.fillRect(0, 0, W, H);
+      this._updatePlatformFooter(departures);
+    }
+    const top = 0;
+    const fg = isPlatform ? this._ledColor : null;
+    const bold = isPlatform;
 
     if (unavailable && unavailable.length > 0 && (!departures || departures.length === 0)) {
-      this._drawString(ctx, 'Sensor nicht', 4, 2, '#ff5050', SCALE);
-      this._drawString(ctx, 'verfuegbar', 4, 12, '#ff5050', SCALE);
+      this._drawString(ctx, 'Sensor nicht', 4, top + 2, fg || '#ff5050', SCALE, { bold });
+      this._drawString(ctx, 'verfuegbar', 4, top + 12, fg || '#ff5050', SCALE, { bold });
       return;
     }
 
     if (!departures || departures.length === 0) {
       if (this._entityConfigs.length === 0) {
-        this._drawString(ctx, 'Station hinzu-', 4, 2, '#888888', SCALE);
-        this._drawString(ctx, 'fuegen...', 4, 12, '#888888', SCALE);
+        this._drawString(ctx, 'Station hinzu-', 4, top + 2, fg || '#888888', SCALE, { bold });
+        this._drawString(ctx, 'fuegen...', 4, top + 12, fg || '#888888', SCALE, { bold });
       } else {
-        this._drawString(ctx, 'Keine Abfahrten', 4, 12, '#ffcc00', SCALE);
+        this._drawString(ctx, 'Keine Abfahrten', 4, top + 12, fg || '#ffcc00', SCALE, { bold });
       }
       return;
     }
 
     const rows = this._rows;
-    const rowHeight = 10;
+    const { rowHeight } = this._layout();
+    const drawRow = isPlatform
+      ? (dep, y) => this._renderPlatformRow(ctx, dep, y, SCALE)
+      : (dep, y) => this._renderDepartureRow(ctx, dep, y, SCALE);
 
     if (!this._scrollEnabled) {
       // Static mode: show only the first N rows
       for (let i = 0; i < rows && i < departures.length; i++) {
-        const y = i * rowHeight + 1;
-        this._renderDepartureRow(ctx, departures[i], y, SCALE);
+        const y = top + i * rowHeight + 1;
+        drawRow(departures[i], y);
       }
     } else {
       const maxStart = Math.max(1, departures.length - rows + 1);
@@ -389,8 +500,8 @@ class BvgDisplayCard extends HTMLElement {
         const depIdx = startIdx + i;
         if (depIdx >= departures.length) break;
         const dep = departures[depIdx];
-        const y = i * rowHeight + 1;
-        this._renderDepartureRow(ctx, dep, y, SCALE);
+        const y = top + i * rowHeight + 1;
+        drawRow(dep, y);
       }
     }
   }
@@ -446,6 +557,98 @@ class BvgDisplayCard extends HTMLElement {
     this._drawString(ctx, direction, dirX, y + 1, dirColor, scale);
   }
 
+  // bvg_platform: big line | destination | big minutes, all in one LED colour.
+  _renderPlatformRow(ctx, dep, y, scale) {
+    if (!dep) return;
+    const W = this._layout().width;
+    const color = this._ledColor;
+    const big = { size: 2, bold: true };
+    const small = { bold: true };
+
+    // Line: double size if it fits the column ("U7", "M10"), else normal.
+    const line = (dep.line || '?').toUpperCase();
+    const lineBig = this._textWidth(line, big) <= PLATFORM_DEST_X - 4;
+    this._drawString(ctx, line, 1, lineBig ? y + 1 : y + 4, color, scale,
+      lineBig ? big : small);
+
+    // Minutes: "2'" in the big font; text states in the normal font.
+    let timeStr;
+    let timeOpts = big;
+    if (dep.cancelled) {
+      timeStr = 'faellt aus';
+      timeOpts = small;
+    } else if (dep.minutes == null) {
+      timeStr = '--';
+    } else if (dep.minutes <= 0) {
+      timeStr = 'sofort';
+      timeOpts = small;
+    } else {
+      timeStr = String(dep.minutes);
+    }
+    // Minute mark: a small tick after the big digits, as on the real display.
+    const tick = timeOpts === big && timeStr !== '--';
+    const tickW = tick ? 4 : 0;
+    const timeX = W - 1 - tickW - this._textWidth(timeStr, timeOpts);
+    this._drawString(ctx, timeStr, timeX, timeOpts === big ? y + 1 : y + 4,
+      color, scale, timeOpts);
+    if (tick) {
+      this._drawString(ctx, "'", W - 1 - tickW, y, color, scale, small);
+    }
+
+    const advance = this._textWidth('a', small) + 1;
+    const chars = Math.floor((timeX - 6 - PLATFORM_DEST_X) / advance);
+    this._drawString(ctx, this._fit(dep.direction || '', chars), PLATFORM_DEST_X, y + 4,
+      color, scale, small);
+  }
+
+  // The printed strip under the display: "Gleis 2", optionally with the station.
+  _updatePlatformFooter(departures) {
+    if (!this._footerEl) return;
+    const parts = [];
+    if (this._showHeader && this._stationNames && this._stationNames.length) {
+      parts.push(this._stationNames.join(' / '));
+    }
+    if (this._showPlatform) {
+      const platforms = [...new Set((departures || []).map(d => d.platform).filter(Boolean))];
+      if (platforms.length > 0 && platforms.length <= 3) {
+        parts.push('Gleis ' + platforms.join(' / '));
+      }
+    }
+    this._footerEl.textContent = parts.join(' \u00b7 ');
+  }
+
+  _fit(text, chars) {
+    if (text.length <= chars) return text;
+    return text.substring(0, Math.max(0, chars - 1)) + '.';
+  }
+
+  // One dim LED dot per logical pixel, used as the bvg_platform background.
+  _getOffPattern(ctx, scale) {
+    if (this._offPattern) return this._offPattern;
+    const tile = document.createElement('canvas');
+    tile.width = scale;
+    tile.height = scale;
+    const tctx = tile.getContext('2d');
+    tctx.fillStyle = '#2e2510';
+    tctx.beginPath();
+    tctx.arc(scale / 2, scale / 2, scale * 0.42, 0, Math.PI * 2);
+    tctx.fill();
+    this._offPattern = ctx.createPattern(tile, 'repeat');
+    return this._offPattern;
+  }
+
+  // Lights one logical pixel: a square on the LED matrix, a round dot on bvg_platform.
+  _plot(ctx, x, y, color, scale) {
+    ctx.fillStyle = color;
+    if (this._style === 'bvg_platform') {
+      ctx.beginPath();
+      ctx.arc((x + 0.5) * scale, (y + 0.5) * scale, scale * 0.48, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(x * scale, y * scale, scale, scale);
+    }
+  }
+
   _formatTime(dep) {
     if (dep.cancelled) return 'X';
     const min = dep.minutes;
@@ -495,36 +698,51 @@ class BvgDisplayCard extends HTMLElement {
     return colors[product] || '#ffcc00';
   }
 
-  // 5x7 bitmap font - column encoded (5 cols, 7 bits per col, LSB=top)
-  _drawString(ctx, text, x, y, color, scale) {
+  // 5x7 bitmap font - column encoded (5 cols, 7 bits per col, LSB=top).
+  // opts.size scales each font pixel to size x size LEDs; opts.bold doubles
+  // every stroke one LED to the right.
+  _drawString(ctx, text, x, y, color, scale, opts = {}) {
+    const size = opts.size || 1;
+    const advance = (5 * size) + (opts.bold ? 1 : 0) + size;
     let curX = x;
     for (let i = 0; i < text.length; i++) {
-      this._drawChar(ctx, text[i], curX, y, color, scale);
-      curX += 6; // 5px char + 1px gap
+      this._drawChar(ctx, text[i], curX, y, color, scale, size);
+      if (opts.bold) this._drawChar(ctx, text[i], curX + 1, y, color, scale, size);
+      curX += advance;
     }
   }
 
-  _drawChar(ctx, ch, x, y, color, scale) {
+  _textWidth(text, opts = {}) {
+    const size = opts.size || 1;
+    const advance = (5 * size) + (opts.bold ? 1 : 0) + size;
+    return text.length ? text.length * advance - size : 0;
+  }
+
+  _drawChar(ctx, ch, x, y, color, scale, size = 1) {
     const glyph = FONT_5x7[ch] || FONT_5x7[ch.toUpperCase()] || FONT_5x7['?'];
     if (!glyph) return;
     for (let col = 0; col < 5; col++) {
       const colData = glyph[col];
       for (let row = 0; row < 7; row++) {
         if (colData & (1 << row)) {
-          ctx.fillStyle = color;
-          ctx.fillRect((x + col) * scale, (y + row) * scale, scale, scale);
+          for (let dx = 0; dx < size; dx++) {
+            for (let dy = 0; dy < size; dy++) {
+              this._plot(ctx, x + col * size + dx, y + row * size + dy, color, scale);
+            }
+          }
         }
       }
     }
   }
 
   getCardSize() {
-    return Math.max(2, Math.ceil(this._rows * 1.2));
+    const extra = this._style === 'bvg_platform' ? 2 : 0; // labels + footer strip
+    return Math.max(2, Math.ceil(this._rows * 1.2) + extra);
   }
 
   getGridOptions() {
     return {
-      rows: Math.max(2, this._rows),
+      rows: Math.max(2, this._rows + (this._style === 'bvg_platform' ? 2 : 0)),
       columns: 12,
       min_rows: 2,
       min_columns: 6,
@@ -548,6 +766,7 @@ class BvgDisplayCard extends HTMLElement {
       show_platform: true,
       show_header: false,
       frame_style: 'panel',
+      style: DEFAULT_STYLE,
     };
   }
 }
@@ -709,14 +928,18 @@ class BvgDisplayCardEditor extends HTMLElement {
     const entities = rawEntities
       .filter(e => e !== null && e !== undefined && e !== '')
       .map(e => typeof e === 'string'
-        ? { entity: e, walk_time: 0 }
-        : { entity: e.entity || '', walk_time: e.walk_time || 0 });
+        ? { entity: e, walk_time: 0, lines: [] }
+        : { entity: e.entity || '', walk_time: e.walk_time || 0,
+            lines: BvgDisplayCard._parseLines(e.lines) });
     const rowsValue = this._config.rows || 3;
     const scrollValue = this._config.scroll_speed || 3000;
     const scrollEnabled = this._config.scroll_enabled !== false;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
     const frameStyle = this._config.frame_style || 'panel';
+    const style = STYLES.includes(this._config.style) ? this._config.style : DEFAULT_STYLE;
+    const isPlatform = style === 'bvg_platform';
+    const ledColor = this._config.led_color || DEFAULT_LED_COLOR;
 
     const usePicker = !!customElements.get('ha-entity-picker');
     const entityListHtml = entities.map((e, idx) => `
@@ -727,6 +950,7 @@ class BvgDisplayCardEditor extends HTMLElement {
         <input type="number" class="walk-input" data-idx="${idx}" value="${e.walk_time}" min="0" max="30" placeholder="0" title="Walk time (min)">
         <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
       </div>
+      <input type="text" class="lines-input" data-idx="${idx}" placeholder="All lines (e.g. U7, M10)" title="Only show these lines (comma-separated, empty = all)">
     `).join('');
 
     this.shadowRoot.innerHTML = `
@@ -790,6 +1014,9 @@ class BvgDisplayCardEditor extends HTMLElement {
           align-items: center;
           margin-bottom: 8px;
         }
+        .lines-input {
+          margin: -2px 0 12px;
+        }
         .entity-row .entity-input {
           flex: 1;
         }
@@ -824,7 +1051,7 @@ class BvgDisplayCardEditor extends HTMLElement {
       <div class="form">
         <div class="field">
           <label>Stations</label>
-          <span class="description">Add one or more BVG departure sensors. Set walk time (min) per station to hide unreachable departures.</span>
+          <span class="description">Add one or more BVG departure sensors. Set walk time (min) per station to hide unreachable departures, and optionally limit each station to certain lines.</span>
           <div style="display:flex;gap:8px;margin-bottom:4px;font-size:0.75rem;color:var(--secondary-text-color);">
             <span style="flex:1;">Entity</span>
             <span style="width:60px;text-align:center;">🚶 min</span>
@@ -833,6 +1060,20 @@ class BvgDisplayCardEditor extends HTMLElement {
           <div id="entity-list">${entityListHtml}</div>
           <button class="add-btn" id="add-entity">+ Add station</button>
         </div>
+        <div class="field">
+          <label>Display Style</label>
+          <span class="description">Overall look of the departure board</span>
+          <select id="style">
+            <option value="led_matrix" ${style === 'led_matrix' ? 'selected' : ''}>LED matrix (colored lines)</option>
+            <option value="bvg_platform" ${isPlatform ? 'selected' : ''}>BVG U-Bahn platform display (amber LED)</option>
+          </select>
+        </div>
+        ${isPlatform ? `
+        <div class="field">
+          <label>LED Color</label>
+          <span class="description">Color of the lit LEDs</span>
+          <input type="color" id="led_color" value="${ledColor}">
+        </div>` : ''}
         <div class="field">
           <label>Rows</label>
           <span class="description">Number of departure rows visible at once</span>
@@ -866,14 +1107,14 @@ class BvgDisplayCardEditor extends HTMLElement {
             <option value="8000" ${scrollValue === 8000 ? 'selected' : ''}>8s (Slow)</option>
           </select>
         </div>
-        <div class="field">
+        ${isPlatform ? '' : `<div class="field">
           <label>Frame Style</label>
           <span class="description">Appearance of the panel border</span>
           <select id="frame_style">
             <option value="panel" ${frameStyle === 'panel' ? 'selected' : ''}>Panel (3D frame)</option>
             <option value="flat" ${frameStyle === 'flat' ? 'selected' : ''}>Flat (minimal)</option>
           </select>
-        </div>
+        </div>`}
         <div class="field">
           <div class="toggle-row">
             <div class="toggle-label">
@@ -887,7 +1128,7 @@ class BvgDisplayCardEditor extends HTMLElement {
           <div class="toggle-row">
             <div class="toggle-label">
               <label>Show Station Header</label>
-              <span class="description">Display station name(s) above the panel</span>
+              <span class="description">${isPlatform ? 'Display station name(s) in the strip below the display' : 'Display station name(s) above the panel'}</span>
             </div>
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
           </div>
@@ -931,6 +1172,16 @@ class BvgDisplayCardEditor extends HTMLElement {
         this._updateEntities(newEntities);
       });
     });
+    this.shadowRoot.querySelectorAll('.lines-input').forEach(input => {
+      // Property, not attribute: keeps user text out of the HTML string.
+      input.value = entities[parseInt(input.dataset.idx, 10)].lines.join(', ');
+      input.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        const newEntities = [...entities];
+        newEntities[idx] = { ...newEntities[idx], lines: BvgDisplayCard._parseLines(e.target.value) };
+        this._updateEntities(newEntities);
+      });
+    });
     this.shadowRoot.querySelectorAll('.remove-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const idx = parseInt(e.target.dataset.idx);
@@ -943,6 +1194,16 @@ class BvgDisplayCardEditor extends HTMLElement {
       this._updateEntities(newEntities);
     });
 
+    this.shadowRoot.getElementById('style').addEventListener('change', (e) => {
+      this._updateConfig('style', e.target.value);
+      // Style-specific fields appear/disappear with the selection.
+      this._render();
+    });
+    if (isPlatform) {
+      this.shadowRoot.getElementById('led_color').addEventListener('change', (e) => {
+        this._updateConfig('led_color', e.target.value);
+      });
+    }
     this.shadowRoot.getElementById('rows').addEventListener('change', (e) => {
       this._updateConfig('rows', parseInt(e.target.value));
     });
@@ -952,9 +1213,12 @@ class BvgDisplayCardEditor extends HTMLElement {
     this.shadowRoot.getElementById('scroll_speed').addEventListener('change', (e) => {
       this._updateConfig('scroll_speed', parseInt(e.target.value));
     });
-    this.shadowRoot.getElementById('frame_style').addEventListener('change', (e) => {
-      this._updateConfig('frame_style', e.target.value);
-    });
+    const frameSelect = this.shadowRoot.getElementById('frame_style');
+    if (frameSelect) {
+      frameSelect.addEventListener('change', (e) => {
+        this._updateConfig('frame_style', e.target.value);
+      });
+    }
     this.shadowRoot.getElementById('show_platform').addEventListener('change', (e) => {
       this._updateConfig('show_platform', e.target.checked);
     });
@@ -964,7 +1228,10 @@ class BvgDisplayCardEditor extends HTMLElement {
   }
 
   _updateEntities(entities) {
-    this._config = { ...this._config, entities: entities };
+    // Leave `lines` out of the YAML when no filter is set.
+    const cleaned = entities.map(({ lines, ...rest }) =>
+      (lines && lines.length ? { ...rest, lines } : rest));
+    this._config = { ...this._config, entities: cleaned };
     // Remove legacy single entity key
     delete this._config.entity;
     this._fireConfigChanged();
