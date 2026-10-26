@@ -26,7 +26,11 @@ const DEFAULT_STYLE = 'led_matrix';
 // the LED field (background) and the lit LEDs; frame_color, background_color
 // and led_color in the card config override single colours of the theme.
 const PLATFORM_THEMES = {
-  bvg: { name: 'BVG original', frame: '#262626', background: '#17130b', led: '#ffa31a' },
+  // Current BVG design: deep black background (better legibility for
+  // visually impaired people) with signal yellow RAL 1023 text.
+  bvg: { name: 'BVG original', frame: '#262626', background: '#000000', led: '#f0d722' },
+  bvg_white: { name: 'BVG white', frame: '#262626', background: '#000000', led: '#ffffff' },
+  amber: { name: 'Classic amber', frame: '#262626', background: '#17130b', led: '#ffa31a' },
 };
 const DEFAULT_THEME = 'bvg';
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
@@ -742,7 +746,7 @@ class BvgDisplayCard extends HTMLElement {
     const specific = {
       'u1': '#7dad4c', 'u2': '#da421e', 'u3': '#007a5b',
       'u4': '#f0d722', 'u5': '#7e5330', 'u6': '#8c6dab',
-      'u7': '#528dba', 'u8': '#224f86', 'u9': '#f3791d',
+      'u7': '#009bd5', 'u8': '#224f86', 'u9': '#f37021',
       's1': '#de4da4', 's2': '#005f27', 's3': '#0060aa',
       's41': '#a23b1e', 's42': '#c26a37', 's5': '#ff5900',
       's7': '#7760b0', 's8': '#55a822', 's9': '#8b1c62',

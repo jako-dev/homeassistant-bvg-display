@@ -151,8 +151,8 @@ Departures from all stations are merged and sorted by time. Each station's `walk
 
 ![BVG platform style](docs/card-preview-platform.png)
 
-The `bvg_platform` style comes with color themes (currently `bvg`, the original
-BVG look). In the visual editor you can pick a theme and adjust the frame,
+The `bvg_platform` style comes with color themes (`bvg`: original BVG look,
+black with signal yellow; `bvg_white`: black with white; `amber`: classic amber LEDs). In the visual editor you can pick a theme and adjust the frame,
 background and LED color with color pickers; choosing a theme again resets them.
 
 ```yaml
