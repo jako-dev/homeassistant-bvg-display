@@ -12,6 +12,8 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 - **Multi-station support** — combine multiple stations in one card
 - **Per-station walk time** — hide departures you can't reach in time
 - **Custom Lovelace card** with authentic LED matrix panel look
+- **Selectable display styles** — colorful LED matrix, or an amber BVG U-Bahn platform display
+- **Per-station line filter** — show only the lines you care about at each station
 - **UI config flow** — add stations via Settings > Integrations
 - **Visual card editor** — configure everything from the dashboard UI, with an
   autocomplete station picker that only lists your BVG departure sensors
@@ -140,18 +142,42 @@ frame_style: flat
 
 Departures from all stations are merged and sorted by time. Each station's `walk_time` (in minutes) filters out departures you can no longer reach on foot.
 
+### Display styles
+
+| `style` | Look |
+|---------|------|
+| `led_matrix` (default) | Pixel LED panel with colored line badges and colored delay times |
+| `bvg_platform` | Replica of the amber LED train destination display on BVG U-Bahn platforms: printed "Linie / Ziel / Abfahrt" labels, big line and minute digits, and a "Gleis" strip below |
+
+![BVG platform style](docs/card-preview-platform.png)
+
+```yaml
+type: custom:bvg-display-card
+style: bvg_platform
+led_color: "#ffa31a"   # optional, any hex color
+entities:
+  - entity: sensor.bvg_u_hermannplatz_departures
+    walk_time: 4
+    lines: [U7]
+rows: 3
+show_platform: true    # "Gleis 2" in the strip below the display
+show_header: true      # station name in that strip as well
+```
+
 ### Card Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `entities` | (required) | List of `*_departures` sensor entities (string or `{entity, walk_time}` object) |
+| `entities` | (required) | List of `*_departures` sensor entities (string or `{entity, walk_time, lines}` object) |
+| `style` | `led_matrix` | Display style: `led_matrix` or `bvg_platform` (see above) |
+| `led_color` | `#ffa31a` | LED color of the `bvg_platform` style |
 | `entity` | — | Single entity (legacy, use `entities` instead) |
 | `rows` | `3` | Number of departure rows to display (1–6) |
 | `scroll_enabled` | `true` | Enable/disable auto-scrolling through departures |
 | `scroll_speed` | `3000` | Auto-scroll interval in milliseconds |
 | `show_platform` | `true` | Show platform/track number |
 | `show_header` | `false` | Display station name(s) above the panel |
-| `frame_style` | `panel` | Panel border style: `panel` (3D frame) or `flat` (minimal) |
+| `frame_style` | `panel` | Panel border style for `led_matrix`: `panel` (3D frame) or `flat` (minimal) |
 
 ### Entity format
 
@@ -170,7 +196,15 @@ entities:
   # With walk time
   - entity: sensor.bvg_alexanderplatz_departures
     walk_time: 5
+
+  # Only certain lines from this station (case-insensitive)
+  - entity: sensor.bvg_alexanderplatz_departures
+    walk_time: 5
+    lines: [U2, M4]
 ```
+
+In the visual editor, the line filter is the text field below each station
+(comma-separated, empty = all lines).
 
 ## Options / Reconfiguration
 
