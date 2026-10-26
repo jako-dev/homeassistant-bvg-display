@@ -297,6 +297,12 @@ class BvgDisplayCard extends HTMLElement {
           padding: 1.5%;
           box-shadow: inset 0 0 8px rgba(0,0,0,0.9);
         }
+        .bvg-platform.no-footer {
+          padding-bottom: 5%;
+        }
+        .bvg-platform-footer[hidden] {
+          display: none;
+        }
         .bvg-platform-footer {
           color: #cfc6a6;
           font-family: "Helvetica Neue", Arial, sans-serif;
@@ -631,6 +637,9 @@ class BvgDisplayCard extends HTMLElement {
       }
     }
     this._footerEl.textContent = parts.join(' \u00b7 ');
+    // Nothing to print: drop the strip and close the housing below the LEDs.
+    this._footerEl.hidden = parts.length === 0;
+    this._footerEl.parentElement.classList.toggle('no-footer', parts.length === 0);
   }
 
   _fit(text, chars) {
