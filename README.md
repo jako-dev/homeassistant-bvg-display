@@ -8,7 +8,8 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 
 ## Features
 
-- **Real-time departures** from any BVG/VBB station
+- **Real-time departures** from any BVG/VBB station, or any stop in Germany via [Transitous](https://transitous.org/)
+- **Automatic Transitous fallback** when the BVG API is down
 - **Multi-station support** — combine multiple stations in one card
 - **Per-station walk time** — hide departures you can't reach in time
 - **Custom Lovelace card** with authentic LED matrix panel look
@@ -45,9 +46,9 @@ A custom Home Assistant integration that shows real-time Berlin public transport
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **"BVG Departure Display"**
-3. Enter a station name (e.g. "Alexanderplatz")
+3. Pick a data source (see [Data sources](#data-sources)) and enter a station name (e.g. "Alexanderplatz")
 4. Select your station from the results
-5. Configure departure count and transport filters
+5. Configure departure count and transport filters (BVG stations also get the Transitous fallback toggle)
 6. Done! Two sensor entities are created per station.
 
 ## Entities
@@ -223,13 +224,34 @@ To change filters or departure count after setup:
 3. Click **Configure** on the station entry
 4. Adjust settings and save
 
-## API
+## Data sources
 
-Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
-- No API key required
-- Rate limit: 100 requests/minute
-- Polling interval: 30 seconds (respects HA update coordinator)
-- Uses Home Assistant's shared HTTP session for all requests, including station search (no per-call session churn)
+Each station uses one of two sources, chosen when it is added. The sensors look
+the same either way, so the card needs no changes.
+
+| Source | Coverage | Polling |
+|--------|----------|---------|
+| **BVG/VBB** ([v6.bvg.transport.rest](https://v6.bvg.transport.rest/)) | Berlin & Brandenburg | every 30 s |
+| **Transitous** ([transitous.org](https://transitous.org/)) | All of Germany and much of Europe, realtime where the operator publishes it (VBB/BVG included) | every 60 s |
+
+**Transitous fallback:** the community-run BVG API sometimes times out. BVG
+stations therefore switch to Transitous automatically while the BVG API is
+failing and back as soon as it answers again. The fallback can be turned off per
+station under **Configure**. While it is active, Transitous is queried at most
+once a minute; the `*_departures` sensor shows which source is live in its
+`data_source` attribute (`bvg` or `transitous`).
+
+Notes:
+- No API key needed for either source.
+- Every Transitous request sends a User-Agent with the integration name, version
+  and this repository's URL, as the [Transitous usage policy](https://transitous.org/api/)
+  requires. Transitous is a volunteer-run service for non-commercial open-source
+  use; please keep the number of Transitous stations reasonable.
+- All requests go through Home Assistant's shared HTTP session.
+
+Departure data from Transitous comes from many open data providers, see
+[transitous.org/sources](https://transitous.org/sources/). The sensors carry this
+attribution whenever they show Transitous data.
 
 ## Troubleshooting
 
@@ -238,7 +260,7 @@ Uses the public [v6.bvg.transport.rest](https://v6.bvg.transport.rest/) API:
 | "Config entry already been setup" | Fixed — the entry no longer keeps state in `hass.data`, so reloads can't collide. |
 | Error / "Sensor nicht verfuegbar" after changing options | Fixed — option changes are applied in place instead of reloading the entry, so entities are never torn down. |
 | Brief "Sensor nicht verfuegbar" on HA restart | Expected while the integration loads. The card keeps showing the last departures for up to 2 minutes to bridge the gap. |
-| No departures shown | BVG API may be temporarily down. Short outages (up to 3 failed polls) are bridged with cached data; longer ones mark the entities unavailable and auto-retry. |
+| No departures shown | BVG API may be temporarily down; with the Transitous fallback on (default) the station switches over automatically. Short outages (up to 3 failed polls) are bridged with cached data; longer ones mark the entities unavailable and auto-retry. |
 | Card not rendering | Make sure the resource is registered (usually automatic). Check browser console. |
 | Entity unavailable | Check HA logs for API errors; verify internet connectivity |
 | Card shows "Sensor nicht verfuegbar" | The configured entity doesn't exist or is in `unavailable` state |
@@ -267,4 +289,4 @@ python3 scripts/generate_icon.py
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
