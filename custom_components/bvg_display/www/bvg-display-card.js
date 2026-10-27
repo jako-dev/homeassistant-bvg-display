@@ -16,13 +16,26 @@ const TICK_INTERVAL_MS = 15000;
 // How long the last good departures stay on screen while entities are
 // unavailable (HA restart, integration reload, brief API outage).
 const STALE_GRACE_MS = 120000;
+// Arriving train ("sofort") blinks like on the DAISY displays: 1 s period.
+const BLINK_INTERVAL_MS = 500;
 
 // Selectable display styles. `led_matrix` is the original colourful panel;
 // `bvg_platform` mimics the amber LED train destination displays on BVG
 // U-Bahn platforms (printed "Linie / Ziel / Abfahrt" labels, "Gleis" strip).
 const STYLES = ['led_matrix', 'bvg_platform'];
 const DEFAULT_STYLE = 'led_matrix';
-const DEFAULT_LED_COLOR = '#ffa31a';
+// Colour themes of the bvg_platform style. Each one sets the housing (frame),
+// the LED field (background) and the lit LEDs; frame_color, background_color
+// and led_color in the card config override single colours of the theme.
+const PLATFORM_THEMES = {
+  // Current BVG design: deep black background (better legibility for
+  // visually impaired people) with signal yellow RAL 1023 text.
+  bvg: { name: 'BVG original', frame: '#262626', background: '#000000', led: '#f0d722' },
+  bvg_white: { name: 'BVG white', frame: '#262626', background: '#000000', led: '#ffffff' },
+  amber: { name: 'Classic amber', frame: '#262626', background: '#17130b', led: '#ffa31a' },
+};
+const DEFAULT_THEME = 'bvg';
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 // Logical x where the "Ziel" column starts in the bvg_platform style.
 const PLATFORM_DEST_X = 46;
 // Row pitch of bvg_platform: like the real display, the big digits fill
@@ -60,9 +73,13 @@ class BvgDisplayCard extends HTMLElement {
     this._scrollEnabled = true;
     this._showPlatform = true;
     this._showHeader = false;
+    this._blinkArriving = false;
+    this._blinkOn = true;
+    this._blinkTimer = null;
     this._frameStyle = 'panel';
     this._style = DEFAULT_STYLE;
-    this._ledColor = DEFAULT_LED_COLOR;
+    this._theme = DEFAULT_THEME;
+    this._colors = { ...PLATFORM_THEMES[DEFAULT_THEME] };
   }
 
   // Accepts a list, a single entry, or nothing. A bare string must not be
@@ -71,6 +88,25 @@ class BvgDisplayCard extends HTMLElement {
     if (Array.isArray(value)) return value;
     if (value === undefined || value === null || value === '') return [];
     return [value];
+  }
+
+  // Theme colours with the per-colour overrides from the config applied.
+  static _resolveColors(config) {
+    const theme = PLATFORM_THEMES[config.theme] || PLATFORM_THEMES[DEFAULT_THEME];
+    const pick = (key, fallback) => (HEX_COLOR.test(config[key] || '') ? config[key] : fallback);
+    return {
+      frame: pick('frame_color', theme.frame),
+      background: pick('background_color', theme.background),
+      led: pick('led_color', theme.led),
+    };
+  }
+
+  // Blends two #rrggbb colours; t = 0 gives a, t = 1 gives b.
+  static _mix(a, b, t) {
+    const pa = [1, 3, 5].map(i => parseInt(a.substr(i, 2), 16));
+    const pb = [1, 3, 5].map(i => parseInt(b.substr(i, 2), 16));
+    return '#' + pa.map((v, i) => Math.round(v + (pb[i] - v) * t)
+      .toString(16).padStart(2, '0')).join('');
   }
 
   // Line filter: list or comma-separated string -> normalized names ("M10").
@@ -118,10 +154,11 @@ class BvgDisplayCard extends HTMLElement {
     this._scrollEnabled = config.scroll_enabled !== false;
     this._showPlatform = config.show_platform !== false;
     this._showHeader = config.show_header || false;
+    this._blinkArriving = config.blink_arriving === true;
     this._frameStyle = config.frame_style || 'panel';
     this._style = STYLES.includes(config.style) ? config.style : DEFAULT_STYLE;
-    this._ledColor = /^#[0-9a-f]{6}$/i.test(config.led_color || '')
-      ? config.led_color : DEFAULT_LED_COLOR;
+    this._theme = PLATFORM_THEMES[config.theme] ? config.theme : DEFAULT_THEME;
+    this._colors = BvgDisplayCard._resolveColors(config);
     this._scrollIndex = 0;
     // Drop the cached snapshot: it belongs to the previous entity set and
     // must not be resurrected under a newly configured station.
@@ -132,6 +169,8 @@ class BvgDisplayCard extends HTMLElement {
       this._render();
       this._updateCard();
       this._restartScroll();
+      // Picks up a changed blink_arriving setting.
+      this._startTick();
     }
   }
 
@@ -160,6 +199,13 @@ class BvgDisplayCard extends HTMLElement {
     this._stopTick();
     if (!this._visible) return;
     this._tickTimer = setInterval(() => this._updateCard(), TICK_INTERVAL_MS);
+    if (this._blinkArriving) {
+      // Redraws only the LED canvas from the last data; no state lookups.
+      this._blinkTimer = setInterval(() => {
+        this._blinkOn = !this._blinkOn;
+        if (this._lastRender) this._renderLed(...this._lastRender);
+      }, BLINK_INTERVAL_MS);
+    }
   }
 
   _stopTick() {
@@ -167,6 +213,11 @@ class BvgDisplayCard extends HTMLElement {
       clearInterval(this._tickTimer);
       this._tickTimer = null;
     }
+    if (this._blinkTimer) {
+      clearInterval(this._blinkTimer);
+      this._blinkTimer = null;
+    }
+    this._blinkOn = true;
   }
 
   _observeVisibility() {
@@ -216,7 +267,7 @@ class BvgDisplayCard extends HTMLElement {
     // percent of the canvas width.
     const zielLeft = (PLATFORM_DEST_X / width) * 100;
     const panelHtml = isPlatform ? `
-        <div class="bvg-platform">
+        <div class="bvg-platform" style="${this._platformCssVars()}">
           <div class="bvg-platform-labels">
             <span>Linie</span>
             <span style="position:absolute;left:${zielLeft}%;">Ziel</span>
@@ -273,8 +324,8 @@ class BvgDisplayCard extends HTMLElement {
           border-radius: 4px;
         }
         .bvg-platform {
-          background: linear-gradient(#2a2a2a, #1f1f1f);
-          border: 1px solid #3a3a3a;
+          background: linear-gradient(var(--bvg-frame-top), var(--bvg-frame));
+          border: 1px solid var(--bvg-frame-border);
           border-radius: 4px;
           overflow: hidden;
           padding: 4% 5% 0;
@@ -292,7 +343,7 @@ class BvgDisplayCard extends HTMLElement {
           padding-bottom: 0.15em;
         }
         .bvg-platform-led {
-          background: #17130b;
+          background: var(--bvg-led-bg);
           border-radius: 2px;
           padding: 1.5%;
           box-shadow: inset 0 0 8px rgba(0,0,0,0.9);
@@ -312,8 +363,8 @@ class BvgDisplayCard extends HTMLElement {
           min-height: 1.6em;
           margin: 3% -5.3% 0;
           padding: 0 5%;
-          background: #141414;
-          border-top: 1px solid #333;
+          background: var(--bvg-strip);
+          border-top: 1px solid var(--bvg-frame-border);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -342,6 +393,20 @@ class BvgDisplayCard extends HTMLElement {
     this._headerEl = this.shadowRoot.querySelector('.bvg-header');
     this._footerEl = this.shadowRoot.querySelector('.bvg-platform-footer');
     this._offPattern = null;
+  }
+
+  // Housing shades derived from the frame colour, so one picker drives the
+  // gradient, the edge and the printed strip.
+  _platformCssVars() {
+    const { frame, background } = this._colors;
+    const mix = BvgDisplayCard._mix;
+    return [
+      `--bvg-frame:${frame}`,
+      `--bvg-frame-top:${mix(frame, '#ffffff', 0.04)}`,
+      `--bvg-frame-border:${mix(frame, '#ffffff', 0.12)}`,
+      `--bvg-strip:${mix(frame, '#000000', 0.45)}`,
+      `--bvg-led-bg:${background}`,
+    ].join(';');
   }
 
   _restartScroll() {
@@ -467,13 +532,14 @@ class BvgDisplayCard extends HTMLElement {
   }
 
   _renderLed(departures, unavailable) {
+    this._lastRender = [departures, unavailable];
     const ctx = this._ctx;
     const SCALE = 3;
     const W = this._canvas.width;
     const H = this._canvas.height;
     const isPlatform = this._style === 'bvg_platform';
 
-    ctx.fillStyle = isPlatform ? '#17130b' : '#000';
+    ctx.fillStyle = isPlatform ? this._colors.background : '#000';
     ctx.fillRect(0, 0, W, H);
     if (isPlatform) {
       // Unlit LEDs stay faintly visible, like on the real display.
@@ -482,7 +548,7 @@ class BvgDisplayCard extends HTMLElement {
       this._updatePlatformFooter(departures);
     }
     const top = 0;
-    const fg = isPlatform ? this._ledColor : null;
+    const fg = isPlatform ? this._colors.led : null;
     const bold = isPlatform;
 
     if (unavailable && unavailable.length > 0 && (!departures || departures.length === 0)) {
@@ -503,9 +569,15 @@ class BvgDisplayCard extends HTMLElement {
 
     const rows = this._rows;
     const { rowHeight } = this._layout();
-    const drawRow = isPlatform
+    const renderRow = isPlatform
       ? (dep, y) => this._renderPlatformRow(ctx, dep, y, SCALE)
       : (dep, y) => this._renderDepartureRow(ctx, dep, y, SCALE);
+    // The whole row of an arriving train blinks (off phase: row left dark).
+    const drawRow = (dep, y) => {
+      const arriving = dep && !dep.cancelled && typeof dep.minutes === 'number' && dep.minutes <= 0;
+      if (this._blinkArriving && arriving && !this._blinkOn) return;
+      renderRow(dep, y);
+    };
 
     if (!this._scrollEnabled) {
       // Static mode: show only the first N rows
@@ -581,7 +653,7 @@ class BvgDisplayCard extends HTMLElement {
   _renderPlatformRow(ctx, dep, y, scale) {
     if (!dep) return;
     const W = this._layout().width;
-    const color = this._ledColor;
+    const color = this._colors.led;
     const big = { size: 2, bold: true };
     const small = { bold: true };
 
@@ -654,7 +726,8 @@ class BvgDisplayCard extends HTMLElement {
     tile.width = scale;
     tile.height = scale;
     const tctx = tile.getContext('2d');
-    tctx.fillStyle = '#2e2510';
+    // Unlit LEDs: the background with a faint tint of the LED colour.
+    tctx.fillStyle = BvgDisplayCard._mix(this._colors.background, this._colors.led, 0.1);
     tctx.beginPath();
     tctx.arc(scale / 2, scale / 2, scale * 0.42, 0, Math.PI * 2);
     tctx.fill();
@@ -700,7 +773,7 @@ class BvgDisplayCard extends HTMLElement {
     const specific = {
       'u1': '#7dad4c', 'u2': '#da421e', 'u3': '#007a5b',
       'u4': '#f0d722', 'u5': '#7e5330', 'u6': '#8c6dab',
-      'u7': '#528dba', 'u8': '#224f86', 'u9': '#f3791d',
+      'u7': '#009bd5', 'u8': '#224f86', 'u9': '#f37021',
       's1': '#de4da4', 's2': '#005f27', 's3': '#0060aa',
       's41': '#a23b1e', 's42': '#c26a37', 's5': '#ff5900',
       's7': '#7760b0', 's8': '#55a822', 's9': '#8b1c62',
@@ -969,10 +1042,14 @@ class BvgDisplayCardEditor extends HTMLElement {
     const scrollEnabled = this._config.scroll_enabled !== false;
     const showPlatform = this._config.show_platform !== false;
     const showHeader = this._config.show_header || false;
+    const blinkArriving = this._config.blink_arriving === true;
     const frameStyle = this._config.frame_style || 'panel';
     const style = STYLES.includes(this._config.style) ? this._config.style : DEFAULT_STYLE;
     const isPlatform = style === 'bvg_platform';
-    const ledColor = this._config.led_color || DEFAULT_LED_COLOR;
+    const theme = PLATFORM_THEMES[this._config.theme] ? this._config.theme : DEFAULT_THEME;
+    const colors = BvgDisplayCard._resolveColors(this._config);
+    const themeOptions = Object.entries(PLATFORM_THEMES).map(([id, t]) =>
+      `<option value="${id}" ${id === theme ? 'selected' : ''}>${t.name}</option>`).join('');
 
     const usePicker = !!customElements.get('ha-entity-picker');
     const entityListHtml = entities.map((e, idx) => `
@@ -1047,6 +1124,25 @@ class BvgDisplayCardEditor extends HTMLElement {
           align-items: center;
           margin-bottom: 8px;
         }
+        .color-row {
+          display: flex;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        .color-pick {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-weight: normal;
+        }
+        .color-pick input {
+          width: 40px;
+          height: 32px;
+          padding: 0;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 6px;
+          background: none;
+        }
         .lines-input {
           margin: -2px 0 12px;
         }
@@ -1098,14 +1194,22 @@ class BvgDisplayCardEditor extends HTMLElement {
           <span class="description">Overall look of the departure board</span>
           <select id="style">
             <option value="led_matrix" ${style === 'led_matrix' ? 'selected' : ''}>LED matrix (colored lines)</option>
-            <option value="bvg_platform" ${isPlatform ? 'selected' : ''}>BVG U-Bahn platform display (amber LED)</option>
+            <option value="bvg_platform" ${isPlatform ? 'selected' : ''}>BVG U-Bahn platform display</option>
           </select>
         </div>
         ${isPlatform ? `
         <div class="field">
-          <label>LED Color</label>
-          <span class="description">Color of the lit LEDs</span>
-          <input type="color" id="led_color" value="${ledColor}">
+          <label>Theme</label>
+          <span class="description">Color preset. Choosing a theme resets the colors below.</span>
+          <select id="theme">${themeOptions}</select>
+        </div>
+        <div class="field">
+          <label>Colors</label>
+          <div class="color-row">
+            <label class="color-pick"><input type="color" id="frame_color" value="${colors.frame}"><span>Frame</span></label>
+            <label class="color-pick"><input type="color" id="background_color" value="${colors.background}"><span>Background</span></label>
+            <label class="color-pick"><input type="color" id="led_color" value="${colors.led}"><span>LEDs</span></label>
+          </div>
         </div>` : ''}
         <div class="field">
           <label>Rows</label>
@@ -1164,6 +1268,15 @@ class BvgDisplayCardEditor extends HTMLElement {
               <span class="description">${isPlatform ? 'Display station name(s) in the strip below the display' : 'Display station name(s) above the panel'}</span>
             </div>
             <input type="checkbox" id="show_header" ${showHeader ? 'checked' : ''}>
+          </div>
+        </div>
+        <div class="field">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <label>Blink Arriving Train</label>
+              <span class="description">The row of a train departing now blinks once per second, like on BVG platforms</span>
+            </div>
+            <input type="checkbox" id="blink_arriving" ${blinkArriving ? 'checked' : ''}>
           </div>
         </div>
       </div>
@@ -1233,8 +1346,16 @@ class BvgDisplayCardEditor extends HTMLElement {
       this._render();
     });
     if (isPlatform) {
-      this.shadowRoot.getElementById('led_color').addEventListener('change', (e) => {
-        this._updateConfig('led_color', e.target.value);
+      this.shadowRoot.getElementById('theme').addEventListener('change', (e) => {
+        const { frame_color, background_color, led_color, ...rest } = this._config;
+        this._config = { ...rest, theme: e.target.value };
+        this._fireConfigChanged();
+        this._render();
+      });
+      ['frame_color', 'background_color', 'led_color'].forEach((key) => {
+        this.shadowRoot.getElementById(key).addEventListener('change', (e) => {
+          this._updateConfig(key, e.target.value);
+        });
       });
     }
     this.shadowRoot.getElementById('rows').addEventListener('change', (e) => {
@@ -1257,6 +1378,9 @@ class BvgDisplayCardEditor extends HTMLElement {
     });
     this.shadowRoot.getElementById('show_header').addEventListener('change', (e) => {
       this._updateConfig('show_header', e.target.checked);
+    });
+    this.shadowRoot.getElementById('blink_arriving').addEventListener('change', (e) => {
+      this._updateConfig('blink_arriving', e.target.checked);
     });
   }
 

@@ -151,10 +151,14 @@ Departures from all stations are merged and sorted by time. Each station's `walk
 
 ![BVG platform style](docs/card-preview-platform.png)
 
+The `bvg_platform` style comes with color themes (`bvg`: original BVG look,
+black with signal yellow; `bvg_white`: black with white; `amber`: classic amber LEDs). In the visual editor you can pick a theme and adjust the frame,
+background and LED color with color pickers; choosing a theme again resets them.
+
 ```yaml
 type: custom:bvg-display-card
 style: bvg_platform
-led_color: "#ffa31a"   # optional, any hex color
+theme: bvg             # color preset (default: BVG original)
 entities:
   - entity: sensor.bvg_u_hermannplatz_departures
     walk_time: 4
@@ -170,13 +174,17 @@ show_header: true      # station name in that strip as well
 |--------|---------|-------------|
 | `entities` | (required) | List of `*_departures` sensor entities (string or `{entity, walk_time, lines}` object) |
 | `style` | `led_matrix` | Display style: `led_matrix` or `bvg_platform` (see above) |
-| `led_color` | `#ffa31a` | LED color of the `bvg_platform` style |
+| `theme` | `bvg` | Color preset of the `bvg_platform` style (`bvg` = original BVG look) |
+| `frame_color` | from theme | Housing color of the `bvg_platform` style (hex) |
+| `background_color` | from theme | LED field background of the `bvg_platform` style (hex) |
+| `led_color` | from theme | Color of the lit LEDs of the `bvg_platform` style (hex) |
 | `entity` | — | Single entity (legacy, use `entities` instead) |
 | `rows` | `3` | Number of departure rows to display (1–6) |
 | `scroll_enabled` | `true` | Enable/disable auto-scrolling through departures |
 | `scroll_speed` | `3000` | Auto-scroll interval in milliseconds |
 | `show_platform` | `true` | Show platform/track number |
 | `show_header` | `false` | Display station name(s) above the panel |
+| `blink_arriving` | `false` | Make the row of a train departing now ("sofort") blink once per second, like on BVG platforms |
 | `frame_style` | `panel` | Panel border style for `led_matrix`: `panel` (3D frame) or `flat` (minimal) |
 
 ### Entity format
