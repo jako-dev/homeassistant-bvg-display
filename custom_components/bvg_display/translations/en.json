@@ -2,9 +2,10 @@
   "config": {
     "step": {
       "user": {
-        "title": "BVG Station Search",
-        "description": "Search for a BVG/VBB station (e.g. {example})",
+        "title": "Station Search",
+        "description": "Pick a data source and search for a station (e.g. {example}). BVG covers Berlin and Brandenburg; Transitous covers all of Germany and much of Europe, with realtime data where the operator provides it.",
         "data": {
+          "source": "Data source",
           "query": "Station name"
         }
       },
@@ -26,13 +27,14 @@
           "bus": "Bus",
           "ferry": "Ferry",
           "express": "IC/ICE",
-          "regional": "Regional"
+          "regional": "Regional",
+          "transitous_fallback": "Fall back to Transitous when the BVG API is down"
         }
       }
     },
     "error": {
       "no_results": "No stations found. Try a different search term.",
-      "cannot_connect": "Could not connect to BVG API."
+      "cannot_connect": "Could not connect to the station search. Try again or pick the other data source."
     },
     "abort": {
       "already_configured": "This station is already configured."
@@ -51,7 +53,8 @@
           "bus": "Bus",
           "ferry": "Ferry",
           "express": "IC/ICE",
-          "regional": "Regional"
+          "regional": "Regional",
+          "transitous_fallback": "Fall back to Transitous when the BVG API is down"
         }
       }
     }

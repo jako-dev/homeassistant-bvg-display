@@ -19,9 +19,12 @@ from .const import (
     ATTR_LINE,
     ATTR_PLATFORM,
     ATTR_PRODUCT,
+    CONF_SOURCE,
     CONF_STATION_ID,
     CONF_STATION_NAME,
     DOMAIN,
+    SOURCE_TRANSITOUS,
+    TRANSITOUS_ATTRIBUTION,
 )
 from .coordinator import BvgDepartureCoordinator
 
@@ -50,10 +53,11 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
     back to the historic entity ids (sensor.bvg_<station>_departures) that the
     docs, the card's getStubConfig autodetect and existing dashboards rely on.
     """
+    transitous = entry.data.get(CONF_SOURCE) == SOURCE_TRANSITOUS
     return DeviceInfo(
         identifiers={(DOMAIN, entry.data[CONF_STATION_ID])},
         name=f"BVG {entry.data[CONF_STATION_NAME]}",
-        manufacturer="BVG/VBB (transport.rest)",
+        manufacturer="Transitous" if transitous else "BVG/VBB (transport.rest)",
         model="Departure Board",
     )
 
@@ -89,6 +93,13 @@ class BvgNextDepartureSensor(CoordinatorEntity, SensorEntity):
         self._entry = entry
         self._attr_unique_id = f"{entry.data[CONF_STATION_ID]}_next"
         self._attr_device_info = _device_info(entry)
+
+    @property
+    def attribution(self) -> str | None:
+        """Credit Transitous whenever its data is shown (its usage policy)."""
+        if self.coordinator.active_source == SOURCE_TRANSITOUS:
+            return TRANSITOUS_ATTRIBUTION
+        return None
 
     @property
     def native_value(self) -> datetime | None:
@@ -132,6 +143,13 @@ class BvgDeparturesSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_info = _device_info(entry)
 
     @property
+    def attribution(self) -> str | None:
+        """Credit Transitous whenever its data is shown (its usage policy)."""
+        if self.coordinator.active_source == SOURCE_TRANSITOUS:
+            return TRANSITOUS_ATTRIBUTION
+        return None
+
+    @property
     def native_value(self) -> int:
         """Return number of departures."""
         if not self.coordinator.data:
@@ -142,7 +160,7 @@ class BvgDeparturesSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict:
         """Return all departures as a list attribute."""
         if not self.coordinator.data:
-            return {ATTR_DEPARTURES: []}
+            return {ATTR_DEPARTURES: [], "data_source": self.coordinator.active_source}
 
         departures = []
         for dep in self.coordinator.data:
@@ -163,4 +181,5 @@ class BvgDeparturesSensor(CoordinatorEntity, SensorEntity):
         return {
             ATTR_DEPARTURES: departures,
             "station_name": self._entry.data[CONF_STATION_NAME],
+            "data_source": self.coordinator.active_source,
         }

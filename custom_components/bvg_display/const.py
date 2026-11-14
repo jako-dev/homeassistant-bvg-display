@@ -6,11 +6,20 @@ CONF_STATION_ID = "station_id"
 CONF_STATION_NAME = "station_name"
 CONF_DEPARTURE_COUNT = "departure_count"
 CONF_FILTERS = "filters"
+CONF_SOURCE = "source"
+CONF_TRANSITOUS_FALLBACK = "transitous_fallback"
+
+SOURCE_BVG = "bvg"
+SOURCE_TRANSITOUS = "transitous"
 
 DEFAULT_DEPARTURE_COUNT = 6
 DEFAULT_SCAN_INTERVAL = 30  # seconds
+# Transitous asks clients to stay light on its volunteer-run servers.
+TRANSITOUS_MIN_INTERVAL = 60  # seconds
 
 BVG_API_BASE = "https://v6.bvg.transport.rest"
+TRANSITOUS_API_BASE = "https://api.transitous.org/api"
+TRANSITOUS_ATTRIBUTION = "Data: Transitous (https://transitous.org/sources/)"
 
 TRANSPORT_TYPES = [
     "suburban",
